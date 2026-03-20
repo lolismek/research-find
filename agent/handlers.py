@@ -97,6 +97,34 @@ async def _enrich_paper_graph(
     user_phone: str | None,
 ) -> None:
     """Background task: extract concepts, create edges, fetch references, embed."""
+    # 0. GROBID enrichment — extract keywords from PDF if available
+    if paper.pdf_url and not paper.keywords:
+        try:
+            from services.grobid import process_pdf_from_url
+            from models.paper import Paper as PaperModel
+            tei_data = await process_pdf_from_url(paper.pdf_url)
+            PaperModel.from_grobid_tei(tei_data, base_paper=paper)
+            # Persist GROBID data to Neo4j
+            if paper.keywords or paper.grobid_abstract:
+                from services.neo4j_store import _get_driver, _session_kwargs
+                driver = _get_driver()
+                if key_type == "doi":
+                    match = "MATCH (p:Paper {doi: $key})"
+                elif key_type == "arxiv_id":
+                    match = "MATCH (p:Paper {arxiv_id: $key})"
+                else:
+                    match = "MATCH (p:Paper {title: $key})"
+                query = f"{match} SET p.keywords = $keywords, p.grobid_abstract = $grobid_abstract"
+                async with driver.session(**_session_kwargs()) as session:
+                    await session.run(
+                        query, key=merge_key,
+                        keywords=paper.keywords,
+                        grobid_abstract=paper.grobid_abstract,
+                    )
+            print(f"[enrich] GROBID: {len(paper.keywords or [])} keywords extracted")
+        except Exception as e:
+            print(f"[enrich] GROBID enrichment failed (non-fatal): {e}")
+
     # 1. Extract and normalize concepts
     try:
         raw_concepts = collect_raw_concepts(paper)

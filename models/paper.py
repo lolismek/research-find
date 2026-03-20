@@ -76,7 +76,8 @@ class Paper(BaseModel):
 
         fields = data.get("fieldsOfStudy") or []
         s2_fields = data.get("s2FieldsOfStudy") or []
-        all_fields = fields or [f.get("category", "") for f in s2_fields if isinstance(f, dict)]
+        s2_categories = [f.get("category", "") for f in s2_fields if isinstance(f, dict)]
+        all_fields = list(dict.fromkeys(fields + s2_categories))  # merge, dedup, preserve order
 
         return cls(
             paper_id=data.get("paperId"),
