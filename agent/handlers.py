@@ -73,7 +73,17 @@ async def handle_add_paper(
         _enrich_paper_graph(paper, merge_key, key_type, source, _user_phone)
     )
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+
+    def _on_done(t):
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            import traceback
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    task.add_done_callback(_on_done)
 
     return {
         "status": "added",
@@ -97,15 +107,29 @@ async def _enrich_paper_graph(
     user_phone: str | None,
 ) -> None:
     """Background task: extract concepts, create edges, fetch references, embed."""
-    # 0. GROBID enrichment — extract keywords from PDF if available
-    if paper.pdf_url and not paper.keywords:
-        try:
-            from services.grobid import process_pdf_from_url
-            from models.paper import Paper as PaperModel
-            tei_data = await process_pdf_from_url(paper.pdf_url)
-            PaperModel.from_grobid_tei(tei_data, base_paper=paper)
-            # Persist GROBID data to Neo4j
-            if paper.keywords or paper.grobid_abstract:
+    print(f"[enrich] Starting enrichment for: {paper.title[:60]} (pdf_url={paper.pdf_url}, keywords={paper.keywords})")
+
+    # 0. Resolve PDF URL if missing, then run GROBID for keywords
+    if not paper.keywords:
+        # PDF URL fallback chain: S2 openAccessPdf → arXiv → Unpaywall
+        pdf_url = paper.pdf_url
+        if not pdf_url and paper.doi:
+            try:
+                from ingestion.unpaywall import check_doi_oa_status
+                oa_info = await check_doi_oa_status(paper.doi)
+                if oa_info.get("is_oa") and oa_info.get("url"):
+                    pdf_url = oa_info["url"]
+                    print(f"[enrich] Unpaywall found PDF: {pdf_url[:80]}")
+            except Exception as e:
+                print(f"[enrich] Unpaywall lookup failed (non-fatal): {e}")
+
+        if pdf_url:
+            try:
+                from services.grobid import process_pdf_from_url
+                from models.paper import Paper as PaperModel
+                tei_data = await process_pdf_from_url(pdf_url)
+                PaperModel.from_grobid_tei(tei_data, base_paper=paper)
+                # Persist GROBID data + resolved pdf_url to Neo4j
                 from services.neo4j_store import _get_driver, _session_kwargs
                 driver = _get_driver()
                 if key_type == "doi":
@@ -114,16 +138,22 @@ async def _enrich_paper_graph(
                     match = "MATCH (p:Paper {arxiv_id: $key})"
                 else:
                     match = "MATCH (p:Paper {title: $key})"
-                query = f"{match} SET p.keywords = $keywords, p.grobid_abstract = $grobid_abstract"
+                query = (
+                    f"{match} SET p.keywords = $keywords, "
+                    "p.grobid_abstract = $grobid_abstract, p.pdf_url = $pdf_url"
+                )
                 async with driver.session(**_session_kwargs()) as session:
                     await session.run(
                         query, key=merge_key,
                         keywords=paper.keywords,
                         grobid_abstract=paper.grobid_abstract,
+                        pdf_url=pdf_url,
                     )
-            print(f"[enrich] GROBID: {len(paper.keywords or [])} keywords extracted")
-        except Exception as e:
-            print(f"[enrich] GROBID enrichment failed (non-fatal): {e}")
+                print(f"[enrich] GROBID: {len(paper.keywords or [])} keywords extracted")
+            except Exception as e:
+                print(f"[enrich] GROBID enrichment failed (non-fatal): {e}")
+        else:
+            print(f"[enrich] No PDF URL available, skipping GROBID")
 
     # 1. Extract and normalize concepts
     try:

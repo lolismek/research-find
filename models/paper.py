@@ -72,17 +72,22 @@ class Paper(BaseModel):
         pdf_url = None
         oa_pdf = data.get("openAccessPdf")
         if isinstance(oa_pdf, dict):
-            pdf_url = oa_pdf.get("url")
+            pdf_url = oa_pdf.get("url") or None  # reject empty strings
 
         fields = data.get("fieldsOfStudy") or []
         s2_fields = data.get("s2FieldsOfStudy") or []
         s2_categories = [f.get("category", "") for f in s2_fields if isinstance(f, dict)]
         all_fields = list(dict.fromkeys(fields + s2_categories))  # merge, dedup, preserve order
 
+        # Fallback: construct arXiv PDF URL if available
+        arxiv_id = ext.get("ArXiv")
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
         return cls(
             paper_id=data.get("paperId"),
             doi=ext.get("DOI"),
-            arxiv_id=ext.get("ArXiv"),
+            arxiv_id=arxiv_id,
             title=data.get("title", "Untitled"),
             abstract=data.get("abstract"),
             authors=authors,
