@@ -21,6 +21,10 @@ def main():
         except Exception as e:
             print(f"Warning: Could not connect to Neo4j ({e}). Some features may be unavailable.")
 
+        from background.rss_monitor import get_monitor
+        monitor = get_monitor()
+        monitor.start_daily()
+
     async def on_shutdown(app):
         await close_neo4j()
 

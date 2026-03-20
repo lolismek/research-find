@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Optional
 
@@ -80,21 +81,26 @@ async def resolve_arxiv_url(url_or_id: str) -> Paper:
     )
 
 
-async def fetch_arxiv_rss(category: str) -> list[Paper]:
-    """Fetch latest papers from an arXiv RSS feed.
+ARXIV_TOP_LEVEL = [
+    "cs", "econ", "eess", "math", "astro-ph", "cond-mat",
+    "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th",
+    "math-ph", "nlin", "nucl-ex", "nucl-th", "physics",
+    "quant-ph", "q-bio", "q-fin", "stat",
+]
 
-    Args:
-        category: arXiv category like "cs.AI", "cs.CL", "stat.ML", etc.
 
-    Returns:
-        List of Paper objects from the RSS feed.
-    """
+async def _fetch_single_rss(session: aiohttp.ClientSession, category: str) -> list[Paper]:
+    """Fetch a single RSS feed, returning [] on failure."""
     rss_url = f"https://rss.arxiv.org/rss/{category}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(rss_url) as resp:
+    try:
+        async with session.get(rss_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
-                raise ValueError(f"arXiv RSS returned HTTP {resp.status} for {category}")
+                print(f"[arxiv] RSS returned {resp.status} for {category}")
+                return []
             text = await resp.text()
+    except Exception as e:
+        print(f"[arxiv] Failed to fetch {category}: {e}")
+        return []
 
     feed = feedparser.parse(text)
     papers = []
@@ -102,7 +108,6 @@ async def fetch_arxiv_rss(category: str) -> list[Paper]:
         arxiv_id = extract_arxiv_id(entry.get("link", "") or entry.get("id", ""))
 
         authors = []
-        # RSS feeds put authors in dc:creator or author field
         author_str = entry.get("author", "") or entry.get("dc_creator", "")
         if author_str:
             for name in author_str.split(","):
@@ -120,4 +125,38 @@ async def fetch_arxiv_rss(category: str) -> list[Paper]:
             source="arxiv",
         ))
 
+    return papers
+
+
+async def fetch_arxiv_rss(category: str | None = None) -> list[Paper]:
+    """Fetch latest papers from arXiv RSS feed(s).
+
+    Args:
+        category: arXiv category like "cs.AI", "cs.CL", "stat.ML".
+                  If None, fetches all top-level categories.
+
+    Returns:
+        List of Paper objects, deduplicated by arXiv ID.
+    """
+    async with aiohttp.ClientSession() as session:
+        if category:
+            return await _fetch_single_rss(session, category)
+
+        # Fetch all top-level categories in parallel
+        print(f"[arxiv] Fetching all {len(ARXIV_TOP_LEVEL)} top-level categories...")
+        results = await asyncio.gather(
+            *[_fetch_single_rss(session, cat) for cat in ARXIV_TOP_LEVEL]
+        )
+
+    # Deduplicate by arxiv_id
+    seen = set()
+    papers = []
+    for batch in results:
+        for p in batch:
+            key = p.arxiv_id or p.title
+            if key not in seen:
+                seen.add(key)
+                papers.append(p)
+
+    print(f"[arxiv] Fetched {len(papers)} unique papers across all categories")
     return papers

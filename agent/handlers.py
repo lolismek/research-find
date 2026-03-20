@@ -10,7 +10,6 @@ from ingestion.evidence_service import search_papers as _search_papers_multi
 from services.paper_resolver import resolve_paper
 from services.embeddings import schedule_embedding
 from services.neo4j_store import store_paper, get_paper, list_papers, search_similar
-from services.arxiv import fetch_arxiv_rss
 from background.rss_monitor import get_monitor
 
 
@@ -115,20 +114,30 @@ async def handle_list_stored_papers(limit: int = 20) -> dict[str, Any]:
     return {"count": len(formatted), "papers": formatted}
 
 
-async def handle_monitor_arxiv_topic(
-    category: str,
-    schedule: str = "immediate",
+async def handle_fetch_arxiv_papers(
+    category: str | None = None,
     top_n: int = 5,
 ) -> dict[str, Any]:
-    """Start monitoring an arXiv category."""
+    """Fetch latest arXiv papers on demand."""
     monitor = get_monitor()
-    monitor.start_monitoring(category, schedule=schedule, top_n=top_n)
+    return await monitor.fetch_on_demand(category, top_n=top_n)
+
+
+async def handle_set_notification_time(
+    hour: int,
+    minute: int = 0,
+) -> dict[str, Any]:
+    """Set the daily digest notification time."""
+    if not (0 <= hour <= 23):
+        return {"error": "hour must be 0-23"}
+    if not (0 <= minute <= 59):
+        return {"error": "minute must be 0-59"}
+    monitor = get_monitor()
+    monitor.set_notification_time(hour, minute)
+    t = monitor.get_notification_time()
     return {
-        "status": "monitoring_started",
-        "category": category,
-        "schedule": schedule,
-        "top_n": top_n,
-        "active_monitors": list(monitor.active_categories()),
+        "status": "notification_time_updated",
+        "notification_time": f"{t.hour:02d}:{t.minute:02d}",
     }
 
 
@@ -177,7 +186,8 @@ TOOL_HANDLERS = {
     "add_paper": handle_add_paper,
     "get_paper_details": handle_get_paper_details,
     "list_stored_papers": handle_list_stored_papers,
-    "monitor_arxiv_topic": handle_monitor_arxiv_topic,
+    "fetch_arxiv_papers": handle_fetch_arxiv_papers,
+    "set_notification_time": handle_set_notification_time,
     "find_similar_papers": handle_find_similar_papers,
 }
 

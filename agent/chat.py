@@ -8,8 +8,6 @@ import anthropic
 
 from agent.tools import TOOLS
 from agent.handlers import dispatch_tool
-from background.rss_monitor import get_monitor
-
 SYSTEM_PROMPT = """\
 You are a research discovery assistant. You help users find, organize, and explore \
 academic papers. You have access to tools that let you:
@@ -31,22 +29,12 @@ async def chat_loop():
     """Run the interactive chat loop."""
     client = anthropic.AsyncAnthropic()
     messages = []
-    monitor = get_monitor()
 
     print("\n=== Research Discovery Chat ===")
     print("Ask me to find papers, add papers to your database, or monitor arXiv topics.")
     print("Type 'quit' or 'exit' to stop.\n")
 
     while True:
-        # Check for pending RSS notifications
-        notifications = monitor.get_pending_notifications()
-        if notifications:
-            for notif in notifications:
-                print(f"\n[RSS Update] New papers in {notif['category']}:")
-                for p in notif.get("papers", []):
-                    print(f"  - {p.get('title', 'Untitled')}")
-                print()
-
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):

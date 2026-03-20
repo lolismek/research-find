@@ -76,36 +76,53 @@ TOOLS = [
         },
     },
     {
-        "name": "monitor_arxiv_topic",
+        "name": "fetch_arxiv_papers",
         "description": (
-            "Start monitoring an arXiv category for new papers. "
-            "The system will poll the RSS feed and notify you of new papers."
+            "Fetch the latest arXiv papers on demand. "
+            "Can fetch a specific category or all of arXiv if no category is given."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "arXiv category to monitor (e.g., 'cs.AI', 'cs.CL', 'stat.ML')",
-                },
-                "schedule": {
-                    "type": "string",
-                    "description": "When to deliver notifications: 'immediate' or a time like '9am' (default: immediate)",
-                    "default": "immediate",
+                    "description": "arXiv category to fetch (e.g., 'cs.AI', 'cs.CL', 'stat.ML'). Omit to fetch all categories.",
                 },
                 "top_n": {
                     "type": "integer",
-                    "description": "Number of top papers to include in notifications (default: 5)",
+                    "description": "Number of top papers to return (default: 5)",
                     "default": 5,
                 },
             },
-            "required": ["category"],
+            "required": [],
+        },
+    },
+    {
+        "name": "set_notification_time",
+        "description": (
+            "Set the daily arXiv digest notification time. "
+            "The system automatically sends a digest of new papers at this time every day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hour": {
+                    "type": "integer",
+                    "description": "Hour of the day (0-23) for the daily notification",
+                },
+                "minute": {
+                    "type": "integer",
+                    "description": "Minute of the hour (0-59, default: 0)",
+                    "default": 0,
+                },
+            },
+            "required": ["hour"],
         },
     },
     {
         "name": "find_similar_papers",
         "description": (
-            "Find papers similar to a given paper using vector similarity search (SPECTER embeddings). "
+            "Find papers similar to a given paper using vector similarity search (OpenAI text-embedding-3-small). "
             "Requires the paper to be stored in the database with an embedding."
         ),
         "input_schema": {

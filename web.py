@@ -19,8 +19,14 @@ academic papers. You have access to tools that let you:
 - Search across Semantic Scholar, PubMed, and Europe PMC
 - Add papers to a personal Neo4j database by URL, DOI, or title
 - Process PDFs through GROBID for full-text extraction
-- Monitor arXiv RSS feeds for new papers in specific categories
+- Fetch the latest arXiv papers on demand (by category or all)
+- Receive a daily arXiv digest at a configurable time (default 9am)
+- Set or change the daily notification time
 - Find similar papers using SPECTER vector embeddings
+
+The system automatically sends a daily arXiv digest. Users can also ask you to \
+fetch papers right now using fetch_arxiv_papers, or change the daily notification \
+time using set_notification_time.
 
 When presenting search results, be concise but informative. Highlight key details \
 like citation count, venue, and open access status. When the user asks to add a paper, \
@@ -105,6 +111,13 @@ async def ws_handler(request):
     messages = []
     monitor = get_monitor()
 
+    # Give the monitor a way to push messages directly to this chat
+    async def send_to_chat(text: str):
+        if not ws.closed:
+            await ws.send_json({"type": "text", "content": text})
+
+    monitor.set_send(send_to_chat)
+
     print("[web] Client connected")
 
     async for raw in ws:
@@ -117,7 +130,6 @@ async def ws_handler(request):
 
         print(f"[web] User: {user_input}")
         messages.append({"role": "user", "content": user_input})
-
 
         try:
             while True:
