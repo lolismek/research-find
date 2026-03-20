@@ -14,19 +14,19 @@ from typing import List, Dict, Any, Optional
 import aiohttp
 from datetime import datetime
 
-from etl.literature.ingestion.semantic_scholar import (
+from .semantic_scholar import (
     paper_search as s2_paper_search,
 )
-from etl.literature.ingestion.europe_pmc import (
+from .europe_pmc import (
     search_europe_pmc_papers,
 )
-from etl.literature.ingestion.unpaywall import (
+from .unpaywall import (
     check_doi_oa_status,
 )
-from etl.literature.ingestion.crossref import (
+from .crossref import (
     enrich_papers_with_crossref,
 )
-from etl.literature.ingestion.pubmed_api import (
+from .pubmed_api import (
     search_pubmed_papers,
 )
 
