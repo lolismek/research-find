@@ -88,6 +88,11 @@ async def init_db():
             "CREATE CONSTRAINT user_phone IF NOT EXISTS "
             "FOR (u:User) REQUIRE u.phone_number IS UNIQUE"
         )
+        # Insight constraint
+        await session.run(
+            "CREATE CONSTRAINT insight_id IF NOT EXISTS "
+            "FOR (i:Insight) REQUIRE i.insight_id IS UNIQUE"
+        )
 
 
 async def store_paper(paper: Paper) -> str:
@@ -288,10 +293,115 @@ async def create_added_edge(
         "MATCH (u:User {phone_number: $phone}) "
         f"{match_paper} "
         "MERGE (u)-[r:ADDED]->(p) "
-        "ON CREATE SET r.added_at = datetime($at), r.source = $source"
+        "ON CREATE SET r.added_at = datetime($at), r.source = $source, r.score = 1.0"
     )
     async with driver.session(**_session_kwargs()) as session:
         await session.run(query, phone=phone, val=paper_key, at=at, source=source)
+
+
+async def store_insight(
+    insight_id: str, text: str, sentiment: str, score_impact: float,
+) -> None:
+    """MERGE an Insight node."""
+    driver = _get_driver()
+    query = (
+        "MERGE (i:Insight {insight_id: $insight_id}) "
+        "ON CREATE SET i.text = $text, i.sentiment = $sentiment, "
+        "i.score_impact = $score_impact, i.created_at = datetime()"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(
+            query, insight_id=insight_id, text=text,
+            sentiment=sentiment, score_impact=score_impact,
+        )
+
+
+async def create_about_edge(
+    insight_id: str, paper_key: str, key_type: str, user_phone: str,
+) -> None:
+    """Create Insight -[:ABOUT {user_phone}]-> Paper edge."""
+    driver = _get_driver()
+    if key_type == "doi":
+        match_paper = "MATCH (p:Paper {doi: $val})"
+    elif key_type == "arxiv_id":
+        match_paper = "MATCH (p:Paper {arxiv_id: $val})"
+    else:
+        match_paper = "MATCH (p:Paper {title: $val})"
+
+    query = (
+        "MATCH (i:Insight {insight_id: $insight_id}) "
+        f"{match_paper} "
+        "MERGE (i)-[r:ABOUT]->(p) "
+        "ON CREATE SET r.user_phone = $phone"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(
+            query, insight_id=insight_id, val=paper_key, phone=user_phone,
+        )
+
+
+async def create_insight_covers_edges(
+    insight_id: str, concept_names: list[str],
+) -> None:
+    """Create Insight -[:COVERS]-> Concept edges."""
+    if not concept_names:
+        return
+    driver = _get_driver()
+    query = (
+        "UNWIND $names AS cn "
+        "MATCH (i:Insight {insight_id: $insight_id}) "
+        "MATCH (c:Concept {name: cn}) "
+        "MERGE (i)-[:COVERS]->(c)"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(query, insight_id=insight_id, names=concept_names)
+
+
+async def get_paper_concepts(paper_key: str, key_type: str) -> list[str]:
+    """Return concept names linked to a paper via COVERS."""
+    driver = _get_driver()
+    if key_type == "doi":
+        match_paper = "MATCH (p:Paper {doi: $val})"
+    elif key_type == "arxiv_id":
+        match_paper = "MATCH (p:Paper {arxiv_id: $val})"
+    else:
+        match_paper = "MATCH (p:Paper {title: $val})"
+
+    query = f"{match_paper}-[:COVERS]->(c:Concept) RETURN c.name AS name"
+    async with driver.session(**_session_kwargs()) as session:
+        result = await session.run(query, val=paper_key)
+        records = await result.data()
+    return [r["name"] for r in records]
+
+
+async def update_added_score(
+    phone: str, paper_key: str, key_type: str, delta: float,
+) -> float:
+    """Adjust score on ADDED edge, clamp to [0.0, 2.0]. Returns new score."""
+    driver = _get_driver()
+    if key_type == "doi":
+        match_paper = "MATCH (p:Paper {doi: $val})"
+    elif key_type == "arxiv_id":
+        match_paper = "MATCH (p:Paper {arxiv_id: $val})"
+    else:
+        match_paper = "MATCH (p:Paper {title: $val})"
+
+    query = (
+        "MATCH (u:User {phone_number: $phone}) "
+        f"{match_paper} "
+        "MATCH (u)-[r:ADDED]->(p) "
+        "SET r.score = CASE "
+        "  WHEN coalesce(r.score, 1.0) + $delta < 0.0 THEN 0.0 "
+        "  WHEN coalesce(r.score, 1.0) + $delta > 2.0 THEN 2.0 "
+        "  ELSE coalesce(r.score, 1.0) + $delta END "
+        "RETURN r.score AS score"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        result = await session.run(query, phone=phone, val=paper_key, delta=delta)
+        record = await result.single()
+    if record:
+        return record["score"]
+    return 1.0
 
 
 async def store_s2_ref_ids(

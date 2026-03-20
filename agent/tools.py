@@ -233,4 +233,35 @@ TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "add_insight",
+        "description": (
+            "Add a user insight or observation about a paper. Use this when the user "
+            "comments on a paper's methodology, findings, significance, or any aspect. "
+            "The insight is linked to the paper and adjusts the paper's score."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "paper_identifier": {
+                    "type": "string",
+                    "description": "DOI, arXiv ID, or title of the paper the insight is about",
+                },
+                "insight_text": {
+                    "type": "string",
+                    "description": "The insight content — the user's observation or comment",
+                },
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "negative", "neutral"],
+                    "description": "Sentiment of the insight",
+                },
+                "score_impact": {
+                    "type": "number",
+                    "description": "How much to adjust the paper score (e.g., +0.3 or -0.4)",
+                },
+            },
+            "required": ["paper_identifier", "insight_text", "sentiment", "score_impact"],
+        },
+    },
 ]

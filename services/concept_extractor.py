@@ -131,6 +131,47 @@ def collect_raw_concepts(paper: Paper) -> list[str]:
     return sorted(normalized)
 
 
+async def match_insight_to_concepts(
+    insight_text: str, concept_names: list[str],
+) -> list[str]:
+    """Match insight text against paper concepts by embedding similarity.
+
+    Returns concept names with cosine similarity >= 0.80.
+    """
+    import math
+    from services.embeddings import embed_text
+    from services.neo4j_store import update_concept_embedding
+
+    def _cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    insight_embedding = await embed_text(insight_text)
+
+    matched = []
+    for name in concept_names:
+        from services.neo4j_store import _get_driver, _session_kwargs
+        driver = _get_driver()
+        async with driver.session(**_session_kwargs()) as session:
+            result = await session.run(
+                "MATCH (c:Concept {name: $name}) RETURN c.embedding AS emb",
+                name=name,
+            )
+            record = await result.single()
+
+        concept_emb = record["emb"] if record else None
+        if not concept_emb:
+            concept_emb = await embed_text(name)
+            await update_concept_embedding(name, concept_emb)
+
+        if _cosine(insight_embedding, concept_emb) >= 0.80:
+            matched.append(name)
+
+    return matched
+
+
 async def normalize_concepts(raw_names: list[str]) -> list[str]:
     """Deduplicate concepts via embedding similarity against existing concepts.
 

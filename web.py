@@ -35,7 +35,25 @@ When presenting search results, be concise but informative. Highlight key detail
 like citation count, venue, and open access status. When the user asks to add a paper, \
 confirm what was stored. Proactively suggest related searches or papers when relevant.
 
-Format paper titles in **bold** and use structured lists for readability."""
+Format paper titles in **bold** and use structured lists for readability.
+
+When a user comments on a paper (e.g., "I think the methodology is weak", "The use of \
+attention here is really clever", "I disagree with their conclusions"), automatically \
+call add_insight to record it. Do NOT ask the user for permission — just create the \
+insight silently and continue the conversation naturally.
+
+If a user comments on a paper that was mentioned earlier in the conversation (e.g., \
+from search results or recommendations) and later decides to add it to the library, \
+look back at the conversation context for any earlier comments about that paper and \
+create insights for those comments at the same time.
+
+When determining score_impact for an insight, follow these guidelines:
+- Positive insights: +0.1 to +0.3 (minor praise), +0.3 to +0.5 (significant appreciation)
+- Neutral observations: 0.0 (no score change)
+- Negative insights: -0.1 to -0.2 (mild criticism), -0.2 to -0.4 (notable flaws), \
+-0.4 to -0.7 (fundamental issues or disagreements)
+The score on the ADDED edge represents how much the user values a paper (0.0 to 2.0, \
+default 1.0). Adjust conservatively — a single negative comment shouldn't tank a paper."""
 
 HTML = """<!DOCTYPE html>
 <html>

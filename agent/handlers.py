@@ -19,6 +19,8 @@ from services.neo4j_store import (
     store_concepts, create_covers_edges, create_added_edge,
     store_s2_ref_ids, reconcile_cites_edges, update_related_to,
     list_concepts_without_embeddings, create_follows_edge,
+    store_insight, create_about_edge, create_insight_covers_edges,
+    get_paper_concepts, update_added_score,
 )
 from background.rss_monitor import get_monitor
 
@@ -387,6 +389,107 @@ async def handle_follow_concept(
     return {"status": "following", "concept": name}
 
 
+async def handle_add_insight(
+    paper_identifier: str,
+    insight_text: str,
+    sentiment: str,
+    score_impact: float,
+    _user_phone: str | None = None,
+) -> dict[str, Any]:
+    """Add a user insight about a paper, then enrich in background."""
+    import uuid
+
+    if not _user_phone:
+        return {"error": "No user identity — please log in with a phone number"}
+
+    # Resolve paper
+    paper = await get_paper(doi=paper_identifier)
+    if not paper:
+        paper = await get_paper(arxiv_id=paper_identifier)
+    if not paper:
+        paper = await get_paper(title=paper_identifier)
+    if not paper:
+        return {"error": f"Paper not found: {paper_identifier}"}
+
+    key_type = "doi" if paper.doi else ("arxiv_id" if paper.arxiv_id else "title")
+    merge_key = paper.doi or paper.arxiv_id or paper.title
+
+    insight_id = str(uuid.uuid4())
+    await store_insight(insight_id, insight_text, sentiment, score_impact)
+    await create_about_edge(insight_id, merge_key, key_type, _user_phone)
+
+    # Background enrichment
+    task = asyncio.create_task(
+        _enrich_insight(insight_id, merge_key, key_type, score_impact, _user_phone)
+    )
+    _background_tasks.add(task)
+
+    def _on_done(t):
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            import traceback
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    task.add_done_callback(_on_done)
+
+    return {
+        "status": "insight_added",
+        "insight_id": insight_id,
+        "paper_title": paper.title,
+        "sentiment": sentiment,
+        "score_impact": score_impact,
+    }
+
+
+async def _enrich_insight(
+    insight_id: str,
+    merge_key: str,
+    key_type: str,
+    score_impact: float,
+    user_phone: str,
+) -> None:
+    """Background: match insight to paper concepts, update ADDED score."""
+    from services.concept_extractor import match_insight_to_concepts
+
+    # 1. Get paper's concepts and match insight text
+    try:
+        concepts = await get_paper_concepts(merge_key, key_type)
+        if concepts:
+            # Retrieve insight text from Neo4j
+            from services.neo4j_store import _get_driver, _session_kwargs
+            driver = _get_driver()
+            async with driver.session(**_session_kwargs()) as session:
+                result = await session.run(
+                    "MATCH (i:Insight {insight_id: $iid}) RETURN i.text AS text",
+                    iid=insight_id,
+                )
+                record = await result.single()
+            insight_text = record["text"] if record else ""
+
+            if insight_text:
+                matched = await match_insight_to_concepts(insight_text, concepts)
+                if matched:
+                    await create_insight_covers_edges(insight_id, matched)
+                    print(f"[insight] Linked insight {insight_id[:8]} to concepts: {matched}")
+    except Exception as e:
+        print(f"[insight] Concept matching failed (non-fatal): {e}")
+
+    # 2. Update ADDED edge score
+    try:
+        if score_impact != 0.0:
+            new_score = await update_added_score(
+                user_phone, merge_key, key_type, score_impact,
+            )
+            print(f"[insight] Updated ADDED score: delta={score_impact}, new={new_score}")
+    except Exception as e:
+        print(f"[insight] Score update failed (non-fatal): {e}")
+
+    print(f"[insight] Done enriching insight {insight_id[:8]}")
+
+
 # Tool dispatch map
 TOOL_HANDLERS = {
     "search_papers": handle_search_papers,
@@ -399,6 +502,7 @@ TOOL_HANDLERS = {
     "set_notification_time": handle_set_notification_time,
     "find_similar_papers": handle_find_similar_papers,
     "follow_concept": handle_follow_concept,
+    "add_insight": handle_add_insight,
 }
 
 

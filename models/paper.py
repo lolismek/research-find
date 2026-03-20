@@ -18,6 +18,14 @@ class Concept(BaseModel):
     embedding: Optional[list[float]] = None
 
 
+class Insight(BaseModel):
+    insight_id: str
+    text: str
+    sentiment: str  # "positive", "negative", or "neutral"
+    score_impact: float
+    created_at: Optional[datetime] = None
+
+
 class User(BaseModel):
     phone_number: str
     name: Optional[str] = None
