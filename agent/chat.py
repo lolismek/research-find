@@ -61,44 +61,48 @@ async def chat_loop():
 
         messages.append({"role": "user", "content": user_input})
 
-        # Run the tool-use loop
-        while True:
-            response = await client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages,
-            )
+        try:
+            # Run the tool-use loop
+            while True:
+                response = await client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4096,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=messages,
+                )
 
-            # Collect assistant content blocks
-            assistant_content = response.content
-            messages.append({"role": "assistant", "content": assistant_content})
+                # Collect assistant content blocks
+                assistant_content = response.content
+                messages.append({"role": "assistant", "content": assistant_content})
 
-            # Check if there are tool uses
-            tool_uses = [b for b in assistant_content if b.type == "tool_use"]
+                # Check if there are tool uses
+                tool_uses = [b for b in assistant_content if b.type == "tool_use"]
 
-            if not tool_uses:
-                # No more tool calls — print text response and break
+                if not tool_uses:
+                    # No more tool calls — print text response and break
+                    for block in assistant_content:
+                        if hasattr(block, "text"):
+                            print(f"\nAssistant: {block.text}\n")
+                    break
+
+                # Print any intermediate text
                 for block in assistant_content:
-                    if hasattr(block, "text"):
-                        print(f"\nAssistant: {block.text}\n")
-                break
+                    if hasattr(block, "text") and block.text:
+                        print(f"\nAssistant: {block.text}")
 
-            # Print any intermediate text
-            for block in assistant_content:
-                if hasattr(block, "text") and block.text:
-                    print(f"\nAssistant: {block.text}")
+                # Execute tool calls
+                tool_results = []
+                for tool_use in tool_uses:
+                    print(f"  [calling {tool_use.name}...]")
+                    result_str = await dispatch_tool(tool_use.name, tool_use.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": result_str,
+                    })
 
-            # Execute tool calls
-            tool_results = []
-            for tool_use in tool_uses:
-                print(f"  [calling {tool_use.name}...]")
-                result_str = await dispatch_tool(tool_use.name, tool_use.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": result_str,
-                })
-
-            messages.append({"role": "user", "content": tool_results})
+                messages.append({"role": "user", "content": tool_results})
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break
