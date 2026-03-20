@@ -162,4 +162,75 @@ TOOLS = [
             "required": ["concept_name"],
         },
     },
+    {
+        "name": "fetch_rss_papers",
+        "description": (
+            "Fetch latest papers from RSS feeds. Supports Nature, Cell Press, Science, "
+            "PNAS, ScienceDaily, medRxiv, bioRxiv, and arXiv. Can fetch a specific source, "
+            "a subcategory within a source, or all configured feeds."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "Feed source: 'nature', 'cell_press', 'science_aaas', 'pnas', "
+                        "'science_daily', 'medrxiv', 'biorxiv', 'arxiv', 'peter_attia'. "
+                        "Omit to fetch all configured sources."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Subcategory within the source. For arxiv: e.g. 'cs.AI'. "
+                        "For biorxiv: e.g. 'neuroscience'. For medrxiv: e.g. 'Oncology'. "
+                        "Omit to fetch all subcategories of the source."
+                    ),
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of top papers to return (default: 10)",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "configure_rss_feeds",
+        "description": (
+            "Configure which RSS feed sources and subcategories to include "
+            "in the daily digest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rss_categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Top-level sources: 'nature', 'cell_press', 'science_aaas', "
+                        "'pnas', 'science_daily', 'peter_attia'"
+                    ),
+                },
+                "medrxiv_specialties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "medRxiv subjects, e.g. ['Oncology', 'Neurology']",
+                },
+                "biorxiv_specialties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "bioRxiv subjects, e.g. ['neuroscience', 'genetics']",
+                },
+                "arxiv_categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "arXiv categories, e.g. ['cs.AI', 'cs.LG']",
+                },
+            },
+            "required": [],
+        },
+    },
 ]

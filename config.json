@@ -1,1 +1,8 @@
-{"notification_hour": 10, "notification_minute": 0}
+{
+  "notification_hour": 10,
+  "notification_minute": 0,
+  "rss_categories": [],
+  "medrxiv_specialties": [],
+  "biorxiv_specialties": [],
+  "arxiv_categories": []
+}

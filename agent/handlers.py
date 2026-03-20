@@ -276,13 +276,42 @@ async def handle_list_stored_papers(limit: int = 20) -> dict[str, Any]:
     return {"count": len(formatted), "papers": formatted}
 
 
+async def handle_fetch_rss_papers(
+    source: str | None = None,
+    category: str | None = None,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    """Fetch latest papers from multi-source RSS feeds."""
+    monitor = get_monitor()
+    return await monitor.fetch_on_demand(source=source, category=category, top_n=top_n)
+
+
+async def handle_configure_rss_feeds(
+    rss_categories: list[str] | None = None,
+    medrxiv_specialties: list[str] | None = None,
+    biorxiv_specialties: list[str] | None = None,
+    arxiv_categories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Save user's feed preferences to config."""
+    monitor = get_monitor()
+    monitor.set_feed_preferences(
+        rss_categories=rss_categories,
+        medrxiv_specialties=medrxiv_specialties,
+        biorxiv_specialties=biorxiv_specialties,
+        arxiv_categories=arxiv_categories,
+    )
+    return {
+        "status": "configured",
+        "preferences": monitor.get_feed_preferences(),
+    }
+
+
 async def handle_fetch_arxiv_papers(
     category: str | None = None,
     top_n: int = 5,
 ) -> dict[str, Any]:
-    """Fetch latest arXiv papers on demand."""
-    monitor = get_monitor()
-    return await monitor.fetch_on_demand(category, top_n=top_n)
+    """Fetch latest arXiv papers on demand (backward compat — routes through multi-source)."""
+    return await handle_fetch_rss_papers(source="arxiv", category=category, top_n=top_n)
 
 
 async def handle_set_notification_time(
@@ -365,6 +394,8 @@ TOOL_HANDLERS = {
     "get_paper_details": handle_get_paper_details,
     "list_stored_papers": handle_list_stored_papers,
     "fetch_arxiv_papers": handle_fetch_arxiv_papers,
+    "fetch_rss_papers": handle_fetch_rss_papers,
+    "configure_rss_feeds": handle_configure_rss_feeds,
     "set_notification_time": handle_set_notification_time,
     "find_similar_papers": handle_find_similar_papers,
     "follow_concept": handle_follow_concept,
