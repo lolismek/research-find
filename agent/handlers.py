@@ -13,7 +13,7 @@ import aiohttp
 from ingestion.evidence_service import search_papers as _search_papers_multi
 from services.paper_resolver import resolve_paper, fetch_s2_references
 from services.embeddings import schedule_embedding, schedule_concept_embeddings
-from services.concept_extractor import collect_raw_concepts, normalize_concepts
+from services.concept_extractor import extract_concepts, collect_raw_concepts, normalize_concepts
 from services.neo4j_store import (
     store_paper, get_paper, list_papers, search_similar,
     store_concepts, create_covers_edges, create_added_edge,
@@ -155,29 +155,40 @@ async def _enrich_paper_graph(
         else:
             print(f"[enrich] No PDF URL available, skipping GROBID")
 
-    # 1. Extract and normalize concepts
+    # 1. Extract concepts via Haiku, fall back to metadata
     try:
+        raw_concepts = await extract_concepts(paper)
+        print(f"[enrich] Haiku extracted {len(raw_concepts)} concepts: {raw_concepts}")
+    except Exception as e:
+        print(f"[enrich] Haiku extraction failed, falling back to metadata: {e}")
         raw_concepts = collect_raw_concepts(paper)
+    try:
         if raw_concepts:
             concepts = await normalize_concepts(raw_concepts)
         else:
             concepts = []
+        print(f"[enrich] After normalization: {len(concepts)} concepts: {concepts}")
     except Exception as e:
-        print(f"[enrich] Concept extraction failed: {e}")
+        print(f"[enrich] Concept normalization failed: {e}")
+        import traceback; traceback.print_exc()
         concepts = []
 
     # 2. Store Concept nodes + COVERS edges
     try:
         if concepts:
             await store_concepts(concepts)
+            print(f"[enrich] Stored {len(concepts)} concept nodes")
             await create_covers_edges(merge_key, key_type, concepts)
+            print(f"[enrich] Created COVERS edges: {merge_key} ({key_type}) -> {concepts}")
     except Exception as e:
         print(f"[enrich] COVERS edges failed: {e}")
+        import traceback; traceback.print_exc()
 
     # 3. Update RELATED_TO weights
     try:
         if concepts:
             await update_related_to(concepts)
+            print(f"[enrich] Updated RELATED_TO for {len(concepts)} concepts")
     except Exception as e:
         print(f"[enrich] RELATED_TO failed: {e}")
 
