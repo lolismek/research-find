@@ -28,16 +28,18 @@ _S2_URL_RE = re.compile(r"semanticscholar\.org/paper/[^/]*/([a-f0-9]{40})", re.I
 # Rate limit: S2 allows ~1 req/sec unauthenticated, ~10/sec with key
 _s2_last_call = 0.0
 _S2_MIN_INTERVAL = 1.1
+_s2_lock = asyncio.Lock()
 
 
 async def _s2_rate_limit():
     """Wait until we can make another S2 request."""
     global _s2_last_call
     import time
-    elapsed = time.time() - _s2_last_call
-    if elapsed < _S2_MIN_INTERVAL:
-        await asyncio.sleep(_S2_MIN_INTERVAL - elapsed)
-    _s2_last_call = time.time()
+    async with _s2_lock:
+        elapsed = time.time() - _s2_last_call
+        if elapsed < _S2_MIN_INTERVAL:
+            await asyncio.sleep(_S2_MIN_INTERVAL - elapsed)
+        _s2_last_call = time.time()
 
 
 async def _s2_get(

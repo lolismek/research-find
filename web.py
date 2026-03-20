@@ -234,18 +234,21 @@ async def ws_handler(request):
                     await ws.send_json({"type": "text", "content": full_text})
                     break
 
-                # Execute tools
-                tool_results = []
+                # Execute tools in parallel
                 for tool_use in tool_uses:
                     print(f"[web]   calling {tool_use.name}({json.dumps(tool_use.input, default=str)[:80]})")
-                    result_str = await dispatch_tool(
-                        tool_use.name, tool_use.input, user_phone=user_phone,
-                    )
-                    tool_results.append({
+                results = await asyncio.gather(*[
+                    dispatch_tool(tu.name, tu.input, user_phone=user_phone)
+                    for tu in tool_uses
+                ])
+                tool_results = [
+                    {
                         "type": "tool_result",
-                        "tool_use_id": tool_use.id,
+                        "tool_use_id": tu.id,
                         "content": result_str,
-                    })
+                    }
+                    for tu, result_str in zip(tool_uses, results)
+                ]
 
                 messages.append({"role": "user", "content": tool_results})
 
