@@ -175,7 +175,7 @@ TOOLS = [
                 "source": {
                     "type": "string",
                     "description": (
-                        "Feed source: 'nature', 'cell_press', 'science_aaas', 'pnas', "
+                        "Feed source: 'nature', 'science_aaas', 'pnas', "
                         "'science_daily', 'medrxiv', 'biorxiv', 'arxiv', 'peter_attia'. "
                         "Omit to fetch all configured sources."
                     ),
@@ -210,7 +210,7 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Top-level sources: 'nature', 'cell_press', 'science_aaas', "
+                        "Top-level sources: 'nature', 'science_aaas', "
                         "'pnas', 'science_daily', 'peter_attia'"
                     ),
                 },

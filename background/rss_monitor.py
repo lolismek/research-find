@@ -19,8 +19,34 @@ _monitor: Optional["RSSMonitor"] = None
 
 
 def rank_papers(entries: list[dict], n: int) -> list[dict]:
-    """Select top n entries. Placeholder for future scoring logic."""
-    return entries[:n]
+    """Select top n entries, round-robin across sources for diversity."""
+    if len(entries) <= n:
+        return entries
+
+    # Group by source
+    by_source: dict[str, list[dict]] = {}
+    for e in entries:
+        src = e.get("source_category", "unknown")
+        by_source.setdefault(src, []).append(e)
+
+    # Round-robin pick from each source
+    picked: list[dict] = []
+    sources = list(by_source.keys())
+    idx = {s: 0 for s in sources}
+    while len(picked) < n and sources:
+        exhausted = []
+        for s in sources:
+            if len(picked) >= n:
+                break
+            if idx[s] < len(by_source[s]):
+                picked.append(by_source[s][idx[s]])
+                idx[s] += 1
+            else:
+                exhausted.append(s)
+        for s in exhausted:
+            sources.remove(s)
+
+    return picked
 
 
 def _seconds_until(target: time) -> float:

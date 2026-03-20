@@ -43,13 +43,6 @@ ALL_AVAILABLE_FEEDS: dict[str, list[str]] = {
         "https://www.nature.com/ncomms.rss",
         "https://www.nature.com/natcomputsci.rss",
     ],
-    "cell_press": [
-        "https://www.cell.com/cell/rss",
-        "https://www.cell.com/cancer-cell/rss",
-        "https://www.cell.com/neuron/rss",
-        "https://www.cell.com/chem/rss",
-        "https://www.cell.com/cell-metabolism/rss",
-    ],
     "science_aaas": [
         "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science",
     ],
@@ -265,7 +258,6 @@ async def fetch_single_feed(
     category: str, url: str, days_back: int = 7,
 ) -> dict[str, Any]:
     """Fetch one RSS feed URL. Uses asyncio.to_thread for blocking feedparser."""
-    logger.info("Fetching %s: %s", category, url)
     try:
         feed = await asyncio.to_thread(
             feedparser.parse, url, request_headers={"User-Agent": _USER_AGENT},
@@ -274,9 +266,10 @@ async def fetch_single_feed(
         status = getattr(feed, "status", 200)
         # 301/302/303/307/308 are redirects — feedparser follows them, content is valid
         if status >= 400:
-            logger.warning("HTTP %s for %s", status, url)
+            print(f"[rss] {category}: HTTP {status} for {url}")
             return {"category": category, "url": url, "feed_title": "", "entries": []}
 
+        feed_title = feed.feed.get("title", "Unknown")
         entries: list[dict[str, Any]] = []
         for entry in feed.entries:
             published = (
@@ -315,18 +308,15 @@ async def fetch_single_feed(
 
             entries.append(item)
 
-        logger.info(
-            "%s: %d recent entries out of %d total",
-            category, len(entries), len(feed.entries),
-        )
+        print(f"[rss] {category}/{feed_title}: {len(entries)} recent articles (of {len(feed.entries)} total)")
         return {
             "category": category,
             "url": url,
-            "feed_title": feed.feed.get("title", "Unknown"),
+            "feed_title": feed_title,
             "entries": entries,
         }
     except Exception as e:
-        logger.error("Error fetching %s %s: %s", category, url, e)
+        print(f"[rss] {category}: error fetching {url}: {e}")
         return {"category": category, "url": url, "feed_title": "", "entries": []}
 
 
@@ -338,10 +328,21 @@ async def fetch_feeds(
     """Fetch multiple feeds in parallel with semaphore."""
     sem = asyncio.Semaphore(max_concurrent)
     pairs = [(cat, url) for cat, urls in feeds.items() for url in urls]
+    print(f"[rss] Fetching {len(pairs)} feeds across {len(feeds)} sources...")
 
     async def _guarded(cat: str, url: str) -> dict[str, Any]:
         async with sem:
             return await fetch_single_feed(cat, url, days_back)
 
     results = await asyncio.gather(*[_guarded(c, u) for c, u in pairs])
-    return list(results)
+    results = list(results)
+
+    # Print per-source summary
+    by_source: dict[str, int] = {}
+    for r in results:
+        by_source[r["category"]] = by_source.get(r["category"], 0) + len(r.get("entries", []))
+    total = sum(by_source.values())
+    summary = ", ".join(f"{src}: {n}" for src, n in sorted(by_source.items()) if n > 0)
+    print(f"[rss] Done — {total} articles total ({summary})")
+
+    return results
