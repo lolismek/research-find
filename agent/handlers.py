@@ -8,6 +8,7 @@ from typing import Any
 
 from ingestion.evidence_service import search_papers as _search_papers_multi
 from services.paper_resolver import resolve_paper
+from services.embeddings import schedule_embedding
 from services.neo4j_store import store_paper, get_paper, list_papers, search_similar
 from services.arxiv import fetch_arxiv_rss
 from background.rss_monitor import get_monitor
@@ -44,10 +45,13 @@ async def handle_search_papers(query: str, limit: int = 10) -> dict[str, Any]:
 
 
 async def handle_add_paper(identifier: str, process_pdf: bool = False) -> dict[str, Any]:
-    """Resolve a paper and add it to Neo4j."""
+    """Resolve a paper and add it to Neo4j, then embed in background."""
     paper = await resolve_paper(identifier, enrich_grobid=process_pdf)
     paper.added_at = datetime.utcnow()
     merge_key = await store_paper(paper)
+
+    # Schedule embedding computation in background
+    schedule_embedding(paper)
 
     return {
         "status": "added",

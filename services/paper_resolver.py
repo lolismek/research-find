@@ -19,12 +19,6 @@ S2_API_KEY = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
 S2_FIELDS = (
     "paperId,externalIds,url,title,abstract,venue,year,"
     "citationCount,influentialCitationCount,isOpenAccess,"
-    "openAccessPdf,fieldsOfStudy,s2FieldsOfStudy,authors,embedding"
-)
-# Search endpoint times out with embedding field — fetch it separately
-S2_SEARCH_FIELDS = (
-    "paperId,externalIds,url,title,abstract,venue,year,"
-    "citationCount,influentialCitationCount,isOpenAccess,"
     "openAccessPdf,fieldsOfStudy,s2FieldsOfStudy,authors"
 )
 
@@ -77,33 +71,12 @@ async def _s2_get(
         return None
 
 
-async def _s2_fetch_embedding(session: aiohttp.ClientSession, paper: Paper) -> None:
-    """Best-effort fetch of SPECTER v2 embedding for a paper. Mutates paper in-place."""
-    if paper.embedding or not paper.paper_id:
-        return
-    print(f"[resolver] Fetching embedding for {paper.paper_id}...")
-    data = await _s2_get(
-        session,
-        f"/paper/{paper.paper_id}",
-        fields="embedding.specter_v2",
-        timeout_sec=30,
-    )
-    if data and isinstance(data.get("embedding"), dict):
-        paper.embedding = data["embedding"].get("vector")
-        if paper.embedding:
-            print(f"[resolver] Got embedding ({len(paper.embedding)} dims)")
-        else:
-            print("[resolver] Embedding response had no vector")
-    else:
-        print("[resolver] Could not fetch embedding (timeout or unavailable)")
-
-
 async def _s2_search(session: aiohttp.ClientSession, query: str) -> Optional[dict]:
     """Search S2 for a paper by title, return best match."""
     await _s2_rate_limit()
     url = f"{S2_BASE}/paper/search"
     headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
-    params = {"query": query, "limit": 5, "fields": S2_SEARCH_FIELDS}
+    params = {"query": query, "limit": 5, "fields": S2_FIELDS}
     async with session.get(url, headers=headers, params=params) as resp:
         if resp.status != 200:
             return None
@@ -153,7 +126,7 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
             paper = await resolve_arxiv_url(input_str)
             # Enrich with S2 metadata
             if paper.arxiv_id:
-                data = await _s2_get(session, f"/paper/ARXIV:{paper.arxiv_id}", fields=S2_SEARCH_FIELDS)
+                data = await _s2_get(session, f"/paper/ARXIV:{paper.arxiv_id}", fields=S2_FIELDS)
                 if data:
                     s2_paper = Paper.from_s2_dict(data)
                     paper.paper_id = s2_paper.paper_id
@@ -183,9 +156,6 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
                 print(f"[resolver] Found: {paper.title}")
             else:
                 raise ValueError(f"Could not resolve paper: {input_str}")
-
-        # Fetch embedding (best-effort, all paths)
-        await _s2_fetch_embedding(session, paper)
 
         # Optional GROBID enrichment
         if enrich_grobid and paper.pdf_url:

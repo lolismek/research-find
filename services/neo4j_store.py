@@ -55,12 +55,17 @@ async def init_db():
             "CREATE CONSTRAINT paper_arxiv IF NOT EXISTS "
             "FOR (p:Paper) REQUIRE p.arxiv_id IS UNIQUE"
         )
-        # Vector index for SPECTER embeddings (768-dim, cosine)
+        # Vector index for OpenAI text-embedding-3-small (1536-dim, cosine)
+        # Drop old 768-dim index if it exists, then create 1536-dim
+        try:
+            await session.run("DROP INDEX paper_embedding IF EXISTS")
+        except Exception:
+            pass
         await session.run(
             "CREATE VECTOR INDEX paper_embedding IF NOT EXISTS "
             "FOR (p:Paper) ON (p.embedding) "
             "OPTIONS {indexConfig: {"
-            " `vector.dimensions`: 768,"
+            " `vector.dimensions`: 1536,"
             " `vector.similarity_function`: 'cosine'"
             "}}"
         )
@@ -174,6 +179,31 @@ async def search_similar(embedding: list[float], limit: int = 10) -> list[Paper]
         result = await session.run(query, limit=limit, embedding=embedding)
         records = await result.data()
 
+    return [_record_to_paper(r["p"]) for r in records]
+
+
+async def update_embedding(key: str, key_type: str, embedding: list[float]) -> None:
+    """Update the embedding for a paper identified by key_type (doi/arxiv_id/title)."""
+    driver = _get_driver()
+    if key_type == "doi":
+        match = "MATCH (p:Paper {doi: $key})"
+    elif key_type == "arxiv_id":
+        match = "MATCH (p:Paper {arxiv_id: $key})"
+    else:
+        match = "MATCH (p:Paper {title: $key})"
+
+    query = f"{match} SET p.embedding = $embedding"
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(query, key=key, embedding=embedding)
+
+
+async def list_papers_without_embeddings() -> list[Paper]:
+    """List all papers that don't have embeddings yet."""
+    driver = _get_driver()
+    query = "MATCH (p:Paper) WHERE p.embedding IS NULL RETURN p"
+    async with driver.session(**_session_kwargs()) as session:
+        result = await session.run(query)
+        records = await result.data()
     return [_record_to_paper(r["p"]) for r in records]
 
 
