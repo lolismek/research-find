@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Optional
@@ -86,7 +87,7 @@ async def store_paper(paper: Paper) -> str:
         "arxiv_id": paper.arxiv_id,
         "title": paper.title,
         "abstract": paper.abstract,
-        "authors": [a.model_dump() for a in paper.authors],
+        "authors_json": json.dumps([a.model_dump() for a in paper.authors]),
         "year": paper.year,
         "venue": paper.venue,
         "url": paper.url,
@@ -180,9 +181,15 @@ def _record_to_paper(node) -> Paper:
     """Convert a Neo4j node dict to a Paper model."""
     props = dict(node)
 
-    # Reconstruct Author objects from stored dicts
+    # Reconstruct Author objects from JSON string
     authors = []
-    for a in (props.get("authors") or []):
+    authors_raw = props.get("authors_json") or props.get("authors") or "[]"
+    if isinstance(authors_raw, str):
+        try:
+            authors_raw = json.loads(authors_raw)
+        except (json.JSONDecodeError, TypeError):
+            authors_raw = []
+    for a in authors_raw:
         if isinstance(a, dict):
             authors.append(Author(**a))
         elif isinstance(a, str):
@@ -206,5 +213,23 @@ def _record_to_paper(node) -> Paper:
         grobid_abstract=props.get("grobid_abstract"),
         keywords=props.get("keywords"),
         embedding=props.get("embedding"),
-        added_at=props.get("added_at"),
+        added_at=_parse_datetime(props.get("added_at")),
     )
+
+
+def _parse_datetime(val) -> Optional[datetime]:
+    """Convert Neo4j DateTime or ISO string to Python datetime."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return None
+    # Neo4j DateTime object — convert via iso_format()
+    try:
+        return datetime.fromisoformat(val.iso_format())
+    except Exception:
+        return None

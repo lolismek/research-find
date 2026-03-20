@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Optional
@@ -20,30 +21,48 @@ S2_FIELDS = (
     "citationCount,influentialCitationCount,isOpenAccess,"
     "openAccessPdf,fieldsOfStudy,s2FieldsOfStudy,authors,embedding"
 )
+# Search endpoint times out with embedding field — fetch it separately
+S2_SEARCH_FIELDS = (
+    "paperId,externalIds,url,title,abstract,venue,year,"
+    "citationCount,influentialCitationCount,isOpenAccess,"
+    "openAccessPdf,fieldsOfStudy,s2FieldsOfStudy,authors"
+)
 
 _DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s]+)")
 _S2_URL_RE = re.compile(r"semanticscholar\.org/paper/[^/]*/([a-f0-9]{40})", re.I)
 
 
-async def _s2_get(session: aiohttp.ClientSession, path: str) -> Optional[dict]:
-    """GET from S2 API, returning None on 404."""
+async def _s2_get(
+    session: aiohttp.ClientSession,
+    path: str,
+    fields: str | None = None,
+) -> Optional[dict]:
+    """GET from S2 API, returning None on 404/timeout."""
     url = f"{S2_BASE}{path}"
     headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
-    params = {"fields": S2_FIELDS}
-    async with session.get(url, headers=headers, params=params) as resp:
-        if resp.status == 404:
-            return None
-        if resp.status != 200:
-            text = await resp.text()
-            raise ValueError(f"S2 API error {resp.status}: {text[:200]}")
-        return await resp.json()
+    params = {"fields": fields or S2_FIELDS}
+    try:
+        async with session.get(
+            url, headers=headers, params=params,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status in (404, 504):
+                return None
+            if resp.status != 200:
+                text = await resp.text()
+                print(f"[resolver] S2 API error {resp.status}: {text[:200]}")
+                return None
+            return await resp.json()
+    except asyncio.TimeoutError:
+        print(f"[resolver] S2 request timed out: {path}")
+        return None
 
 
 async def _s2_search(session: aiohttp.ClientSession, query: str) -> Optional[dict]:
     """Search S2 for a paper by title, return best match."""
     url = f"{S2_BASE}/paper/search"
     headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
-    params = {"query": query, "limit": 5, "fields": S2_FIELDS}
+    params = {"query": query, "limit": 5, "fields": S2_SEARCH_FIELDS}
     async with session.get(url, headers=headers, params=params) as resp:
         if resp.status != 200:
             return None
@@ -70,7 +89,8 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
 
     After resolution, optionally process PDF through GROBID.
     """
-    input_str = input_str.strip()
+    input_str = input_str.strip().strip('"').strip("'")
+    print(f"[resolver] Resolving: {input_str}")
 
     async with aiohttp.ClientSession() as session:
         paper = None
@@ -79,6 +99,7 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
         doi_match = _DOI_RE.search(input_str)
         if doi_match:
             doi = doi_match.group(1).rstrip(".")
+            print(f"[resolver] Detected DOI: {doi}")
             data = await _s2_get(session, f"/paper/DOI:{doi}")
             if data:
                 paper = Paper.from_s2_dict(data)
@@ -87,13 +108,13 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
 
         # 2. arXiv
         if paper is None and ("arxiv" in input_str.lower() or extract_arxiv_id(input_str)):
+            print(f"[resolver] Detected arXiv input")
             paper = await resolve_arxiv_url(input_str)
             # Try to get S2 embedding
             if paper.arxiv_id:
                 data = await _s2_get(session, f"/paper/ARXIV:{paper.arxiv_id}")
                 if data:
                     s2_paper = Paper.from_s2_dict(data)
-                    # Merge: keep arXiv data but add S2 enrichment
                     paper.paper_id = s2_paper.paper_id
                     paper.doi = paper.doi or s2_paper.doi
                     paper.embedding = s2_paper.embedding
@@ -108,15 +129,23 @@ async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
             s2_match = _S2_URL_RE.search(input_str)
             if s2_match:
                 paper_id = s2_match.group(1)
+                print(f"[resolver] Detected S2 paper ID: {paper_id}")
                 data = await _s2_get(session, f"/paper/{paper_id}")
                 if data:
                     paper = Paper.from_s2_dict(data)
 
         # 4. Title search
         if paper is None:
+            print(f"[resolver] Searching S2 by title: {input_str}")
             data = await _s2_search(session, input_str)
             if data:
                 paper = Paper.from_s2_dict(data)
+                print(f"[resolver] Found: {paper.title}")
+                # Fetch embedding via single-paper endpoint
+                if paper.paper_id and not paper.embedding:
+                    full = await _s2_get(session, f"/paper/{paper.paper_id}")
+                    if full and isinstance(full.get("embedding"), dict):
+                        paper.embedding = full["embedding"].get("vector")
             else:
                 raise ValueError(f"Could not resolve paper: {input_str}")
 

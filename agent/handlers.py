@@ -187,6 +187,8 @@ async def dispatch_tool(name: str, args: dict[str, Any]) -> str:
         result = await handler(**args)
         return json.dumps(result, default=str)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return json.dumps({"error": str(e)})
 
 
