@@ -64,6 +64,31 @@ async def handle_add_paper(
     _user_phone: str | None = None,
 ) -> dict[str, Any]:
     """Resolve a paper and add it to Neo4j, then enrich graph in background."""
+    # Check if paper already exists in the database
+    existing = (
+        await get_paper(doi=identifier)
+        or await get_paper(arxiv_id=identifier)
+        or await get_paper(title=identifier)
+    )
+    if existing:
+        key_type = "doi" if existing.doi else ("arxiv_id" if existing.arxiv_id else "title")
+        merge_key = existing.doi or existing.arxiv_id or existing.title
+        # Still create ADDED edge if user hasn't added it yet
+        if _user_phone:
+            await create_added_edge(_user_phone, merge_key, key_type, source)
+        return {
+            "status": "already_exists",
+            "merge_key": merge_key,
+            "title": existing.title,
+            "doi": existing.doi,
+            "arxiv_id": existing.arxiv_id,
+            "authors": [a.name for a in existing.authors[:5]],
+            "year": existing.year,
+            "citation_count": existing.citation_count,
+            "has_embedding": existing.embedding is not None,
+            "has_grobid": existing.grobid_abstract is not None,
+        }
+
     # Synchronous: resolve + store (user waits for confirmation)
     paper = await resolve_paper(identifier, enrich_grobid=process_pdf)
     paper.added_at = datetime.utcnow()
