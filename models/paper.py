@@ -35,7 +35,7 @@ class Paper(BaseModel):
     references: Optional[list[dict]] = None
     keywords: Optional[list[str]] = None
 
-    # Embedding from Semantic Scholar (SPECTER, 768-dim)
+    # Embedding (OpenAI text-embedding-3-small, 1536-dim)
     embedding: Optional[list[float]] = None
 
     added_at: Optional[datetime] = None
@@ -78,7 +78,6 @@ class Paper(BaseModel):
             is_open_access=data.get("isOpenAccess"),
             citation_count=data.get("citationCount") or 0,
             fields_of_study=all_fields or None,
-            embedding=data.get("embedding", {}).get("vector") if isinstance(data.get("embedding"), dict) else None,
             source="semantic_scholar",
         )
 

@@ -22,7 +22,7 @@ academic papers. You have access to tools that let you:
 - Fetch the latest arXiv papers on demand (by category or all)
 - Receive a daily arXiv digest at a configurable time (default 9am)
 - Set or change the daily notification time
-- Find similar papers using SPECTER vector embeddings
+- Find similar papers using OpenAI vector embeddings
 
 The system automatically sends a daily arXiv digest. Users can also ask you to \
 fetch papers right now using fetch_arxiv_papers, or change the daily notification \

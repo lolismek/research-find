@@ -106,10 +106,6 @@ async def store_paper(paper: Paper) -> str:
         "added_at": paper.added_at or datetime.utcnow().isoformat(),
     }
 
-    # Store embedding separately (Neo4j vector property)
-    if paper.embedding:
-        props["embedding"] = paper.embedding
-
     # Build SET clauses
     set_parts = []
     for key in props:
