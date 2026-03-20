@@ -11,16 +11,25 @@ from neo4j import AsyncGraphDatabase
 from models.paper import Paper, Author
 
 _driver = None
+_database = None
 
 
 def _get_driver():
-    global _driver
+    global _driver, _database
     if _driver is None:
         uri = os.environ["NEO4J_URI"]
-        user = os.environ.get("NEO4J_USER", "neo4j")
+        user = os.environ.get("NEO4J_USERNAME") or os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ["NEO4J_PASSWORD"]
+        _database = os.environ.get("NEO4J_DATABASE")
         _driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
     return _driver
+
+
+def _session_kwargs():
+    """Return kwargs for driver.session(**_session_kwargs()), including database if set."""
+    if _database:
+        return {"database": _database}
+    return {}
 
 
 async def close():
@@ -34,7 +43,7 @@ async def close():
 async def init_db():
     """Create constraints and indexes."""
     driver = _get_driver()
-    async with driver.session() as session:
+    async with driver.session(**_session_kwargs()) as session:
         # Unique constraint on DOI
         await session.run(
             "CREATE CONSTRAINT paper_doi IF NOT EXISTS "
@@ -103,7 +112,7 @@ async def store_paper(paper: Paper) -> str:
 
     query = f"{merge_clause} {set_clause}"
 
-    async with driver.session() as session:
+    async with driver.session(**_session_kwargs()) as session:
         await session.run(query, **props)
 
     return merge_key
@@ -129,7 +138,7 @@ async def get_paper(
     else:
         return None
 
-    async with driver.session() as session:
+    async with driver.session(**_session_kwargs()) as session:
         result = await session.run(query, **params)
         record = await result.single()
 
@@ -144,7 +153,7 @@ async def list_papers(limit: int = 20) -> list[Paper]:
     driver = _get_driver()
     query = "MATCH (p:Paper) RETURN p ORDER BY p.added_at DESC LIMIT $limit"
 
-    async with driver.session() as session:
+    async with driver.session(**_session_kwargs()) as session:
         result = await session.run(query, limit=limit)
         records = await result.data()
 
@@ -160,7 +169,7 @@ async def search_similar(embedding: list[float], limit: int = 10) -> list[Paper]
         "RETURN node AS p, score ORDER BY score DESC"
     )
 
-    async with driver.session() as session:
+    async with driver.session(**_session_kwargs()) as session:
         result = await session.run(query, limit=limit, embedding=embedding)
         records = await result.data()
 
