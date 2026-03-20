@@ -61,15 +61,19 @@ async def handle_add_paper(
     identifier: str,
     process_pdf: bool = False,
     source: str = "manual",
+    force: bool = False,
     _user_phone: str | None = None,
 ) -> dict[str, Any]:
     """Resolve a paper and add it to Neo4j, then enrich graph in background."""
-    # Check if paper already exists in the database
-    existing = (
-        await get_paper(doi=identifier)
-        or await get_paper(arxiv_id=identifier)
-        or await get_paper(title=identifier)
-    )
+    # Check if paper already exists in the database (skip if force=True)
+    if not force:
+        existing = (
+            await get_paper(doi=identifier)
+            or await get_paper(arxiv_id=identifier)
+            or await get_paper(title=identifier)
+        )
+    else:
+        existing = None
     if existing:
         key_type = "doi" if existing.doi else ("arxiv_id" if existing.arxiv_id else "title")
         merge_key = existing.doi or existing.arxiv_id or existing.title

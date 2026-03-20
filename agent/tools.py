@@ -48,6 +48,11 @@ TOOLS = [
                     "description": "How the paper was added: 'manual' (user gave URL/DOI/title), 'recommended' (from search results), 'rss' (from RSS digest). Default: manual",
                     "default": "manual",
                 },
+                "force": {
+                    "type": "boolean",
+                    "description": "Force re-add even if the paper already exists. Use when the user explicitly asks to re-add or re-process a paper. Default: false",
+                    "default": False,
+                },
             },
             "required": ["identifier"],
         },
