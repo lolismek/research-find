@@ -77,6 +77,50 @@ def schedule_embedding(paper: Paper) -> None:
     print(f"[embeddings] Scheduled embedding for: {paper.title[:60]}")
 
 
+def schedule_concept_embeddings(names: list[str]) -> None:
+    """Fire-and-forget: schedule embedding computation for concepts missing embeddings."""
+    if not names:
+        return
+    task = asyncio.create_task(_embed_and_store_concepts(names))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    print(f"[embeddings] Scheduled concept embeddings for {len(names)} concepts")
+
+
+async def _embed_and_store_concepts(names: list[str]) -> None:
+    """Background task: embed concept names and store on Concept nodes."""
+    from services.neo4j_store import update_concept_embedding
+
+    try:
+        embeddings = await embed_texts(names)
+        for name, embedding in zip(names, embeddings):
+            await update_concept_embedding(name, embedding)
+        print(f"[embeddings] Stored embeddings for {len(names)} concepts")
+    except Exception as e:
+        print(f"[embeddings] Failed to embed concepts: {e}")
+
+
+async def backfill_concept_embeddings() -> int:
+    """Find all concepts without embeddings and compute them. Returns count."""
+    from services.neo4j_store import list_concepts_without_embeddings, update_concept_embedding
+
+    names = await list_concepts_without_embeddings()
+    if not names:
+        print("[embeddings] All concepts have embeddings")
+        return 0
+
+    print(f"[embeddings] Backfilling {len(names)} concept embeddings...")
+    total = 0
+    for i in range(0, len(names), 100):
+        batch = names[i:i + 100]
+        embeddings = await embed_texts(batch)
+        for name, embedding in zip(batch, embeddings):
+            await update_concept_embedding(name, embedding)
+            total += 1
+        print(f"[embeddings] Backfilled {total}/{len(names)} concepts")
+    return total
+
+
 async def embed_papers_batch(papers: list[Paper]) -> list[list[float]]:
     """Embed multiple papers in one API call. Returns list of vectors."""
     texts = [_build_text(p) for p in papers]

@@ -11,6 +11,7 @@ from aiohttp import web
 from agent.tools import TOOLS
 from agent.handlers import dispatch_tool
 from background.rss_monitor import get_monitor
+from services.neo4j_store import store_user
 
 SYSTEM_PROMPT = """\
 You are a research discovery assistant. You help users find, organize, and explore \
@@ -23,6 +24,8 @@ academic papers. You have access to tools that let you:
 - Receive a daily arXiv digest at a configurable time (default 9am)
 - Set or change the daily notification time
 - Find similar papers using OpenAI vector embeddings
+- Follow specific research concepts/topics to track interests
+- When adding papers, set source: "manual" (user gave URL/DOI/title), "recommended" (from search results), "rss" (from RSS digest)
 
 The system automatically sends a daily arXiv digest. Users can also ask you to \
 fetch papers right now using fetch_arxiv_papers, or change the daily notification \
@@ -53,12 +56,23 @@ HTML = """<!DOCTYPE html>
   #input-bar input:focus { border-color: #4a8af4; }
   #input-bar button { padding: 0.6rem 1.2rem; border-radius: 6px; border: none; background: #4a8af4; color: white; cursor: pointer; font-size: 0.95rem; }
   #input-bar button:disabled { opacity: 0.4; cursor: default; }
+  #login { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 1rem; }
+  #login input { padding: 0.6rem 0.9rem; border-radius: 6px; border: 1px solid #333; background: #111; color: #e0e0e0; font-size: 1rem; width: 260px; outline: none; text-align: center; }
+  #login input:focus { border-color: #4a8af4; }
+  #login button { padding: 0.6rem 1.8rem; border-radius: 6px; border: none; background: #4a8af4; color: white; cursor: pointer; font-size: 1rem; }
+  #login h2 { color: #7cb3ff; font-weight: 500; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
-<div id="messages"></div>
-<div id="input-bar">
-  <input id="msg" type="text" placeholder="Ask about papers..." autofocus />
+<div id="login">
+  <h2>research-find</h2>
+  <input id="phone" type="tel" placeholder="Phone number" autofocus />
+  <button onclick="startChat()">Start</button>
+</div>
+<div id="messages" class="hidden"></div>
+<div id="input-bar" class="hidden">
+  <input id="msg" type="text" placeholder="Ask about papers..." />
   <button id="send" onclick="send()">Send</button>
 </div>
 <script>
@@ -66,15 +80,32 @@ const msgs = document.getElementById('messages');
 const inp = document.getElementById('msg');
 const btn = document.getElementById('send');
 let ws;
+let userPhone = null;
+
+function startChat() {
+  const phone = document.getElementById('phone').value.trim();
+  if (!phone) return;
+  userPhone = phone;
+  document.getElementById('login').classList.add('hidden');
+  msgs.classList.remove('hidden');
+  document.getElementById('input-bar').classList.remove('hidden');
+  inp.focus();
+  connect();
+}
+
+document.getElementById('phone').addEventListener('keydown', (e) => { if (e.key === 'Enter') startChat(); });
 
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onopen = () => {
+    ws.send(JSON.stringify({type: 'init', phone: userPhone}));
+  };
   ws.onmessage = (e) => {
     const data = JSON.parse(e.data);
     if (data.type === 'text') { addMsg(data.content, 'assistant'); btn.disabled = false; }
     else if (data.type === 'done') btn.disabled = false;
   };
-  ws.onclose = () => setTimeout(connect, 1000);
+  ws.onclose = () => { if (userPhone) setTimeout(connect, 1000); };
 }
 
 function addMsg(text, cls) {
@@ -91,13 +122,12 @@ function send() {
   const text = inp.value.trim();
   if (!text || btn.disabled) return;
   addMsg(text, 'user');
-  ws.send(text);
+  ws.send(JSON.stringify({type: 'message', content: text}));
   inp.value = '';
   btn.disabled = true;
 }
 
 inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-connect();
 </script>
 </body>
 </html>"""
@@ -110,6 +140,7 @@ async def ws_handler(request):
     client = anthropic.AsyncAnthropic()
     messages = []
     monitor = get_monitor()
+    user_phone = None
 
     # Give the monitor a way to push messages directly to this chat
     async def send_to_chat(text: str):
@@ -124,7 +155,34 @@ async def ws_handler(request):
         if raw.type != web.WSMsgType.TEXT:
             break
 
-        user_input = raw.data.strip()
+        raw_data = raw.data.strip()
+        if not raw_data:
+            continue
+
+        # Parse structured JSON messages; fall back to plain text
+        try:
+            parsed = json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if parsed and isinstance(parsed, dict):
+            msg_type = parsed.get("type")
+            if msg_type == "init":
+                user_phone = parsed.get("phone")
+                if user_phone:
+                    try:
+                        await store_user(user_phone)
+                        print(f"[web] User logged in: {user_phone}")
+                    except Exception as e:
+                        print(f"[web] Failed to store user: {e}")
+                continue
+            elif msg_type == "message":
+                user_input = parsed.get("content", "").strip()
+            else:
+                user_input = raw_data
+        else:
+            user_input = raw_data
+
         if not user_input:
             continue
 
@@ -157,7 +215,9 @@ async def ws_handler(request):
                 tool_results = []
                 for tool_use in tool_uses:
                     print(f"[web]   calling {tool_use.name}({json.dumps(tool_use.input, default=str)[:80]})")
-                    result_str = await dispatch_tool(tool_use.name, tool_use.input)
+                    result_str = await dispatch_tool(
+                        tool_use.name, tool_use.input, user_phone=user_phone,
+                    )
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use.id,

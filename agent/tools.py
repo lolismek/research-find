@@ -42,6 +42,12 @@ TOOLS = [
                     "description": "Whether to process the PDF through GROBID (default: false)",
                     "default": False,
                 },
+                "source": {
+                    "type": "string",
+                    "enum": ["manual", "recommended", "rss"],
+                    "description": "How the paper was added: 'manual' (user gave URL/DOI/title), 'recommended' (from search results), 'rss' (from RSS digest). Default: manual",
+                    "default": "manual",
+                },
             },
             "required": ["identifier"],
         },
@@ -137,6 +143,23 @@ TOOLS = [
                     "default": 10,
                 },
             },
+        },
+    },
+    {
+        "name": "follow_concept",
+        "description": (
+            "Follow a specific research concept/topic to track interests. "
+            "Use when the user expresses interest in a research area."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "concept_name": {
+                    "type": "string",
+                    "description": "The research concept or topic to follow (e.g., 'transformer architectures', 'protein folding')",
+                },
+            },
+            "required": ["concept_name"],
         },
     },
 ]

@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 from datetime import datetime
 from typing import Any
 
+import aiohttp
+
 from ingestion.evidence_service import search_papers as _search_papers_multi
-from services.paper_resolver import resolve_paper
-from services.embeddings import schedule_embedding
-from services.neo4j_store import store_paper, get_paper, list_papers, search_similar
+from services.paper_resolver import resolve_paper, fetch_s2_references
+from services.embeddings import schedule_embedding, schedule_concept_embeddings
+from services.concept_extractor import collect_raw_concepts, normalize_concepts
+from services.neo4j_store import (
+    store_paper, get_paper, list_papers, search_similar,
+    store_concepts, create_covers_edges, create_added_edge,
+    create_cites_edges, update_related_to, list_concepts_without_embeddings,
+    create_follows_edge,
+)
 from background.rss_monitor import get_monitor
+
+_background_tasks: set[asyncio.Task] = set()
 
 
 async def handle_search_papers(query: str, limit: int = 10) -> dict[str, Any]:
@@ -43,14 +55,25 @@ async def handle_search_papers(query: str, limit: int = 10) -> dict[str, Any]:
     }
 
 
-async def handle_add_paper(identifier: str, process_pdf: bool = False) -> dict[str, Any]:
-    """Resolve a paper and add it to Neo4j, then embed in background."""
+async def handle_add_paper(
+    identifier: str,
+    process_pdf: bool = False,
+    source: str = "manual",
+    _user_phone: str | None = None,
+) -> dict[str, Any]:
+    """Resolve a paper and add it to Neo4j, then enrich graph in background."""
+    # Synchronous: resolve + store (user waits for confirmation)
     paper = await resolve_paper(identifier, enrich_grobid=process_pdf)
     paper.added_at = datetime.utcnow()
     merge_key = await store_paper(paper)
+    key_type = "doi" if paper.doi else ("arxiv_id" if paper.arxiv_id else "title")
 
-    # Schedule embedding computation in background
-    schedule_embedding(paper)
+    # Fire background enrichment
+    task = asyncio.create_task(
+        _enrich_paper_graph(paper, merge_key, key_type, source, _user_phone)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return {
         "status": "added",
@@ -64,6 +87,74 @@ async def handle_add_paper(identifier: str, process_pdf: bool = False) -> dict[s
         "has_embedding": paper.embedding is not None,
         "has_grobid": paper.grobid_abstract is not None,
     }
+
+
+async def _enrich_paper_graph(
+    paper,
+    merge_key: str,
+    key_type: str,
+    source: str,
+    user_phone: str | None,
+) -> None:
+    """Background task: extract concepts, create edges, fetch references, embed."""
+    # 1. Extract and normalize concepts
+    try:
+        raw_concepts = collect_raw_concepts(paper)
+        if raw_concepts:
+            concepts = await normalize_concepts(raw_concepts)
+        else:
+            concepts = []
+    except Exception as e:
+        print(f"[enrich] Concept extraction failed: {e}")
+        concepts = []
+
+    # 2. Store Concept nodes + COVERS edges
+    try:
+        if concepts:
+            await store_concepts(concepts)
+            await create_covers_edges(merge_key, key_type, concepts)
+    except Exception as e:
+        print(f"[enrich] COVERS edges failed: {e}")
+
+    # 3. Update RELATED_TO weights
+    try:
+        if concepts:
+            await update_related_to(concepts)
+    except Exception as e:
+        print(f"[enrich] RELATED_TO failed: {e}")
+
+    # 4. Create ADDED edge (User -> Paper)
+    try:
+        if user_phone:
+            await create_added_edge(user_phone, merge_key, key_type, source)
+    except Exception as e:
+        print(f"[enrich] ADDED edge failed: {e}")
+
+    # 5. Fetch S2 references + create CITES edges
+    try:
+        if paper.paper_id:
+            async with aiohttp.ClientSession() as session:
+                refs = await fetch_s2_references(session, paper.paper_id)
+            if refs:
+                await create_cites_edges(merge_key, key_type, refs)
+    except Exception as e:
+        print(f"[enrich] CITES edges failed: {e}")
+
+    # 6. Schedule paper embedding
+    try:
+        schedule_embedding(paper)
+    except Exception as e:
+        print(f"[enrich] Paper embedding scheduling failed: {e}")
+
+    # 7. Schedule concept embeddings for any missing
+    try:
+        missing = await list_concepts_without_embeddings()
+        if missing:
+            schedule_concept_embeddings(missing)
+    except Exception as e:
+        print(f"[enrich] Concept embedding scheduling failed: {e}")
+
+    print(f"[enrich] Done enriching: {paper.title[:60]}")
 
 
 async def handle_get_paper_details(
@@ -180,6 +271,22 @@ async def handle_find_similar_papers(
     }
 
 
+async def handle_follow_concept(
+    concept_name: str,
+    _user_phone: str | None = None,
+) -> dict[str, Any]:
+    """Follow a research concept."""
+    from services.concept_extractor import normalize_text
+    name = normalize_text(concept_name)
+    if not name:
+        return {"error": "Empty concept name"}
+    if not _user_phone:
+        return {"error": "No user identity — please log in with a phone number"}
+
+    await create_follows_edge(_user_phone, name, explicit=True)
+    return {"status": "following", "concept": name}
+
+
 # Tool dispatch map
 TOOL_HANDLERS = {
     "search_papers": handle_search_papers,
@@ -189,15 +296,24 @@ TOOL_HANDLERS = {
     "fetch_arxiv_papers": handle_fetch_arxiv_papers,
     "set_notification_time": handle_set_notification_time,
     "find_similar_papers": handle_find_similar_papers,
+    "follow_concept": handle_follow_concept,
 }
 
 
-async def dispatch_tool(name: str, args: dict[str, Any]) -> str:
-    """Dispatch a tool call and return the JSON result string."""
+async def dispatch_tool(
+    name: str, args: dict[str, Any], user_phone: str | None = None,
+) -> str:
+    """Dispatch a tool call and return the JSON result string.
+
+    If the handler accepts `_user_phone`, inject it automatically.
+    """
     handler = TOOL_HANDLERS.get(name)
     if not handler:
         return json.dumps({"error": f"Unknown tool: {name}"})
     try:
+        sig = inspect.signature(handler)
+        if "_user_phone" in sig.parameters:
+            args = {**args, "_user_phone": user_phone}
         result = await handler(**args)
         return json.dumps(result, default=str)
     except Exception as e:

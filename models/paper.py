@@ -13,6 +13,17 @@ class Author(BaseModel):
     author_id: Optional[str] = None
 
 
+class Concept(BaseModel):
+    name: str
+    embedding: Optional[list[float]] = None
+
+
+class User(BaseModel):
+    phone_number: str
+    name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
 class Paper(BaseModel):
     paper_id: Optional[str] = None
     doi: Optional[str] = None
@@ -34,6 +45,9 @@ class Paper(BaseModel):
     sections: Optional[list[dict]] = None
     references: Optional[list[dict]] = None
     keywords: Optional[list[str]] = None
+
+    # S2 references (populated during background enrichment)
+    s2_references: Optional[list[dict]] = None
 
     # Embedding (OpenAI text-embedding-3-small, 1536-dim)
     embedding: Optional[list[float]] = None
