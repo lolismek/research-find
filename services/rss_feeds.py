@@ -122,6 +122,11 @@ for _url in ALL_AVAILABLE_FEEDS["arxiv"]:
 
 _SPECIALTY_CATEGORIES = {"medrxiv", "biorxiv", "arxiv"}
 
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 # ---------------------------------------------------------------------------
 # Date utilities
 # ---------------------------------------------------------------------------
@@ -191,15 +196,21 @@ def resolve_feeds(
         return {}
 
     # No source specified -> use user prefs or defaults
-    if user_prefs:
+    if user_prefs and _prefs_has_any(user_prefs):
         return _resolve_from_prefs(user_prefs)
 
-    # Default: all non-specialty sources
-    return {
-        k: list(v)
-        for k, v in ALL_AVAILABLE_FEEDS.items()
-        if k not in _SPECIALTY_CATEGORIES
-    }
+    # Default: all sources (full catalog)
+    return {k: list(v) for k, v in ALL_AVAILABLE_FEEDS.items()}
+
+
+def _prefs_has_any(prefs: dict) -> bool:
+    """Return True if user has configured at least one preference."""
+    return bool(
+        prefs.get("rss_categories")
+        or prefs.get("medrxiv_specialties")
+        or prefs.get("biorxiv_specialties")
+        or prefs.get("arxiv_categories")
+    )
 
 
 def _resolve_single(source: str, category: str) -> str | None:
@@ -256,10 +267,14 @@ async def fetch_single_feed(
     """Fetch one RSS feed URL. Uses asyncio.to_thread for blocking feedparser."""
     logger.info("Fetching %s: %s", category, url)
     try:
-        feed = await asyncio.to_thread(feedparser.parse, url)
+        feed = await asyncio.to_thread(
+            feedparser.parse, url, request_headers={"User-Agent": _USER_AGENT},
+        )
 
-        if hasattr(feed, "status") and feed.status != 200:
-            logger.warning("HTTP %s for %s", feed.status, url)
+        status = getattr(feed, "status", 200)
+        # 301/302/303/307/308 are redirects — feedparser follows them, content is valid
+        if status >= 400:
+            logger.warning("HTTP %s for %s", status, url)
             return {"category": category, "url": url, "feed_title": "", "entries": []}
 
         entries: list[dict[str, Any]] = []
