@@ -134,9 +134,13 @@ def collect_raw_concepts(paper: Paper) -> list[str]:
 async def match_insight_to_concepts(
     insight_text: str, concept_names: list[str],
 ) -> list[str]:
-    """Match insight text against paper concepts by embedding similarity.
+    """Match insight text against paper concepts.
 
-    Returns concept names with cosine similarity >= 0.80.
+    Two-pass matching:
+    1. Substring match — if the concept name appears in the insight text (exact)
+    2. Embedding similarity — for remaining concepts, cosine >= 0.80
+
+    Returns matched concept names.
     """
     import math
     from services.embeddings import embed_text
@@ -148,28 +152,43 @@ async def match_insight_to_concepts(
         nb = math.sqrt(sum(x * x for x in b))
         return dot / (na * nb) if na and nb else 0.0
 
-    insight_embedding = await embed_text(insight_text)
+    insight_lower = normalize_text(insight_text)
+    insight_words = set(insight_lower.split())
+    matched = set()
+    remaining = []
 
-    matched = []
+    # Pass 1: substring or word-overlap match
+    # Full substring, OR >=2/3 of concept words present in insight
     for name in concept_names:
-        from services.neo4j_store import _get_driver, _session_kwargs
-        driver = _get_driver()
-        async with driver.session(**_session_kwargs()) as session:
-            result = await session.run(
-                "MATCH (c:Concept {name: $name}) RETURN c.embedding AS emb",
-                name=name,
-            )
-            record = await result.single()
+        concept_words = set(name.split())
+        overlap = len(concept_words & insight_words)
+        if name in insight_lower or overlap / len(concept_words) >= 0.6:
+            matched.add(name)
+        else:
+            remaining.append(name)
 
-        concept_emb = record["emb"] if record else None
-        if not concept_emb:
-            concept_emb = await embed_text(name)
-            await update_concept_embedding(name, concept_emb)
+    # Pass 2: embedding similarity for non-substring matches
+    if remaining:
+        insight_embedding = await embed_text(insight_text)
+        for name in remaining:
+            from services.neo4j_store import _get_driver, _session_kwargs
+            driver = _get_driver()
+            async with driver.session(**_session_kwargs()) as session:
+                result = await session.run(
+                    "MATCH (c:Concept {name: $name}) RETURN c.embedding AS emb",
+                    name=name,
+                )
+                record = await result.single()
 
-        if _cosine(insight_embedding, concept_emb) >= 0.80:
-            matched.append(name)
+            concept_emb = record["emb"] if record else None
+            if not concept_emb:
+                concept_emb = await embed_text(name)
+                await update_concept_embedding(name, concept_emb)
 
-    return matched
+            if _cosine(insight_embedding, concept_emb) >= 0.70:
+                matched.add(name)
+
+    return sorted(matched)
 
 
 async def normalize_concepts(raw_names: list[str]) -> list[str]:

@@ -483,9 +483,25 @@ async def _enrich_insight(
     """Background: match insight to paper concepts, update ADDED score."""
     from services.concept_extractor import match_insight_to_concepts
 
-    # 1. Get paper's concepts and match insight text
+    # 1. Get paper's concepts — if none exist yet, extract them now
     try:
         concepts = await get_paper_concepts(merge_key, key_type)
+        if not concepts:
+            print(f"[insight] Paper has no concepts yet, extracting inline...")
+            from services.concept_extractor import extract_concepts, collect_raw_concepts, normalize_concepts
+            paper = await get_paper(**{key_type: merge_key})
+            if paper:
+                try:
+                    raw = await extract_concepts(paper)
+                except Exception:
+                    raw = collect_raw_concepts(paper)
+                if raw:
+                    concepts = await normalize_concepts(raw)
+                    if concepts:
+                        await store_concepts(concepts)
+                        await create_covers_edges(merge_key, key_type, concepts)
+                        print(f"[insight] Created {len(concepts)} concept edges for paper inline")
+
         if concepts:
             # Retrieve insight text from Neo4j
             from services.neo4j_store import _get_driver, _session_kwargs
@@ -503,6 +519,8 @@ async def _enrich_insight(
                 if matched:
                     await create_insight_covers_edges(insight_id, matched)
                     print(f"[insight] Linked insight {insight_id[:8]} to concepts: {matched}")
+        else:
+            print(f"[insight] No concepts available for paper, skipping concept linking")
     except Exception as e:
         print(f"[insight] Concept matching failed (non-fatal): {e}")
 
