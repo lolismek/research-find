@@ -294,96 +294,56 @@ async def create_added_edge(
         await session.run(query, phone=phone, val=paper_key, at=at, source=source)
 
 
-async def create_cites_edges(
-    paper_key: str, key_type: str, refs: list[dict],
+async def store_s2_ref_ids(
+    paper_key: str, key_type: str, ref_ids: list[str],
 ) -> None:
-    """Create Paper-[:CITES]->Paper edges only to papers already in the DB.
-
-    No stub nodes are created. References that don't match an existing paper
-    are silently skipped. CITES edges accumulate as the user adds more papers.
-    """
-    if not refs:
+    """Store the list of S2 paper IDs that this paper references."""
+    if not ref_ids:
         return
     driver = _get_driver()
 
     if key_type == "doi":
-        match_source = "MATCH (src:Paper {doi: $src_key})"
+        match = "MATCH (p:Paper {doi: $key})"
     elif key_type == "arxiv_id":
-        match_source = "MATCH (src:Paper {arxiv_id: $src_key})"
+        match = "MATCH (p:Paper {arxiv_id: $key})"
     else:
-        match_source = "MATCH (src:Paper {title: $src_key})"
+        match = "MATCH (p:Paper {title: $key})"
 
-    # Collect identifiers from refs
-    dois = []
-    arxiv_ids = []
-    paper_ids = []
-    for ref in refs:
-        ext = ref.get("externalIds") or {}
-        if ext.get("DOI"):
-            dois.append(ext["DOI"])
-        if ext.get("ArXiv"):
-            arxiv_ids.append(ext["ArXiv"])
-        if ref.get("paperId"):
-            paper_ids.append(ref["paperId"])
-
-    # Single query: match existing papers by any identifier, create CITES edges
-    query = (
-        f"{match_source} "
-        "WITH src "
-        "MATCH (tgt:Paper) "
-        "WHERE tgt.doi IN $dois OR tgt.arxiv_id IN $arxiv_ids OR tgt.paper_id IN $paper_ids "
-        "MERGE (src)-[:CITES]->(tgt)"
-    )
+    query = f"{match} SET p.s2_ref_ids = $ref_ids"
     async with driver.session(**_session_kwargs()) as session:
+        await session.run(query, key=paper_key, ref_ids=ref_ids)
+
+
+async def reconcile_cites_edges(paper_id: str) -> None:
+    """Create CITES edges in both directions using stored s2_ref_ids.
+
+    Forward:  this paper's s2_ref_ids -> MATCH existing papers by paper_id
+    Reverse:  existing papers whose s2_ref_ids contain this paper's paper_id
+    No S2 API calls — purely DB-local.
+    """
+    if not paper_id:
+        return
+    driver = _get_driver()
+
+    async with driver.session(**_session_kwargs()) as session:
+        # Forward: this paper cites existing papers
         await session.run(
-            query, src_key=paper_key,
-            dois=dois, arxiv_ids=arxiv_ids, paper_ids=paper_ids,
+            "MATCH (src:Paper {paper_id: $pid}) "
+            "WHERE src.s2_ref_ids IS NOT NULL "
+            "WITH src "
+            "MATCH (tgt:Paper) "
+            "WHERE tgt.paper_id IN src.s2_ref_ids "
+            "MERGE (src)-[:CITES]->(tgt)",
+            pid=paper_id,
         )
-
-
-async def create_cited_by_edges(
-    paper_key: str, key_type: str, citing: list[dict],
-) -> None:
-    """Create existing_paper-[:CITES]->this_paper edges.
-
-    For each paper in `citing` that already exists in the DB, create a CITES
-    edge pointing to the paper identified by paper_key. This is the reverse
-    direction: existing papers that cite the newly added paper.
-    """
-    if not citing:
-        return
-    driver = _get_driver()
-
-    if key_type == "doi":
-        match_target = "MATCH (tgt:Paper {doi: $tgt_key})"
-    elif key_type == "arxiv_id":
-        match_target = "MATCH (tgt:Paper {arxiv_id: $tgt_key})"
-    else:
-        match_target = "MATCH (tgt:Paper {title: $tgt_key})"
-
-    dois = []
-    arxiv_ids = []
-    paper_ids = []
-    for ref in citing:
-        ext = ref.get("externalIds") or {}
-        if ext.get("DOI"):
-            dois.append(ext["DOI"])
-        if ext.get("ArXiv"):
-            arxiv_ids.append(ext["ArXiv"])
-        if ref.get("paperId"):
-            paper_ids.append(ref["paperId"])
-
-    query = (
-        f"{match_target} "
-        "WITH tgt "
-        "MATCH (src:Paper) "
-        "WHERE src.doi IN $dois OR src.arxiv_id IN $arxiv_ids OR src.paper_id IN $paper_ids "
-        "MERGE (src)-[:CITES]->(tgt)"
-    )
-    async with driver.session(**_session_kwargs()) as session:
+        # Reverse: existing papers that cite this paper
         await session.run(
-            query, tgt_key=paper_key,
-            dois=dois, arxiv_ids=arxiv_ids, paper_ids=paper_ids,
+            "MATCH (tgt:Paper {paper_id: $pid}) "
+            "WITH tgt "
+            "MATCH (src:Paper) "
+            "WHERE src.s2_ref_ids IS NOT NULL AND $pid IN src.s2_ref_ids "
+            "MERGE (src)-[:CITES]->(tgt)",
+            pid=paper_id,
         )
 
 
