@@ -41,8 +41,7 @@ HTML = """<!DOCTYPE html>
   .msg { max-width: 720px; margin: 0 auto 0.75rem; padding: 0.6rem 0.9rem; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
   .msg.user { background: #1a3a5c; margin-left: auto; text-align: right; max-width: 480px; }
   .msg.assistant { background: #1a1a1a; border: 1px solid #2a2a2a; }
-  .msg.status { background: none; color: #666; font-size: 0.85rem; text-align: center; font-style: italic; }
-  .msg.assistant :is(strong, b) { color: #7cb3ff; }
+.msg.assistant :is(strong, b) { color: #7cb3ff; }
   #input-bar { border-top: 1px solid #222; padding: 0.75rem; display: flex; gap: 0.5rem; max-width: 780px; width: 100%; margin: 0 auto; }
   #input-bar input { flex: 1; padding: 0.6rem 0.9rem; border-radius: 6px; border: 1px solid #333; background: #111; color: #e0e0e0; font-size: 0.95rem; outline: none; }
   #input-bar input:focus { border-color: #4a8af4; }
@@ -66,9 +65,8 @@ function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.onmessage = (e) => {
     const data = JSON.parse(e.data);
-    if (data.type === 'text') addMsg(data.content, 'assistant');
-    else if (data.type === 'status') addMsg(data.content, 'status');
-    if (data.type === 'done' || data.type === 'text') btn.disabled = false;
+    if (data.type === 'text') { addMsg(data.content, 'assistant'); btn.disabled = false; }
+    else if (data.type === 'done') btn.disabled = false;
   };
   ws.onclose = () => setTimeout(connect, 1000);
 }
@@ -120,16 +118,9 @@ async def ws_handler(request):
         print(f"[web] User: {user_input}")
         messages.append({"role": "user", "content": user_input})
 
-        # Check RSS notifications
-        for notif in monitor.get_pending_notifications():
-            cat = notif["category"]
-            titles = [p.get("title", "?") for p in notif.get("papers", [])]
-            await ws.send_json({"type": "status", "content": f"[RSS] New papers in {cat}: " + ", ".join(titles)})
 
         try:
             while True:
-                await ws.send_json({"type": "status", "content": "Thinking..."})
-
                 response = await client.messages.create(
                     model="claude-sonnet-4-20250514",
                     max_tokens=4096,
@@ -151,14 +142,9 @@ async def ws_handler(request):
                     break
 
                 # Execute tools
-                for block in assistant_content:
-                    if hasattr(block, "text") and block.text:
-                        await ws.send_json({"type": "status", "content": block.text})
-
                 tool_results = []
                 for tool_use in tool_uses:
                     print(f"[web]   calling {tool_use.name}({json.dumps(tool_use.input, default=str)[:80]})")
-                    await ws.send_json({"type": "status", "content": f"Calling {tool_use.name}..."})
                     result_str = await dispatch_tool(tool_use.name, tool_use.input)
                     tool_results.append({
                         "type": "tool_result",
