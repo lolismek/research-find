@@ -42,7 +42,9 @@ async def normalize_concepts(raw_names: list[str]) -> list[str]:
     Returns deduplicated list of canonical concept names.
     """
     from services.embeddings import embed_text
-    from services.neo4j_store import find_similar_concept, update_concept_embedding
+    from services.neo4j_store import (
+        find_similar_concept, update_concept_embedding, store_concepts,
+    )
 
     canonical = {}  # raw_name -> canonical_name
 
@@ -57,7 +59,8 @@ async def normalize_concepts(raw_names: list[str]) -> list[str]:
             canonical[name] = match
         else:
             canonical[name] = name
-            # Store embedding on the new concept immediately
+            # Create the node FIRST, then set its embedding
+            await store_concepts([name])
             await update_concept_embedding(name, embedding)
 
     return sorted(set(canonical.values()))

@@ -122,6 +122,36 @@ async def fetch_s2_references(
     return refs
 
 
+async def fetch_s2_citations(
+    session: aiohttp.ClientSession,
+    paper_id: str,
+) -> list[dict]:
+    """Fetch papers that cite this paper from S2. Returns list of citing paper dicts."""
+    await _s2_rate_limit()
+    url = f"{S2_BASE}/paper/{paper_id}/citations"
+    headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
+    params = {"fields": "paperId,externalIds,title", "limit": 500}
+    try:
+        async with session.get(
+            url, headers=headers, params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status in (404, 429, 504):
+                return []
+            if resp.status != 200:
+                return []
+            data = await resp.json()
+    except (asyncio.TimeoutError, Exception):
+        return []
+
+    citing = []
+    for item in data.get("data", []):
+        paper = item.get("citingPaper")
+        if paper:
+            citing.append(paper)
+    return citing
+
+
 async def resolve_paper(input_str: str, enrich_grobid: bool = False) -> Paper:
     """Resolve any input (DOI, arXiv URL, S2 URL, title) to a Paper.
 

@@ -297,10 +297,10 @@ async def create_added_edge(
 async def create_cites_edges(
     paper_key: str, key_type: str, refs: list[dict],
 ) -> None:
-    """Create Paper-[:CITES]->Paper edges for S2 references.
+    """Create Paper-[:CITES]->Paper edges only to papers already in the DB.
 
-    For each reference, MERGE a target Paper by best identifier (DOI > arxiv_id > paperId),
-    creating a stub if needed, then MERGE the CITES edge.
+    No stub nodes are created. References that don't match an existing paper
+    are silently skipped. CITES edges accumulate as the user adds more papers.
     """
     if not refs:
         return
@@ -313,36 +313,78 @@ async def create_cites_edges(
     else:
         match_source = "MATCH (src:Paper {title: $src_key})"
 
+    # Collect identifiers from refs
+    dois = []
+    arxiv_ids = []
+    paper_ids = []
+    for ref in refs:
+        ext = ref.get("externalIds") or {}
+        if ext.get("DOI"):
+            dois.append(ext["DOI"])
+        if ext.get("ArXiv"):
+            arxiv_ids.append(ext["ArXiv"])
+        if ref.get("paperId"):
+            paper_ids.append(ref["paperId"])
+
+    # Single query: match existing papers by any identifier, create CITES edges
+    query = (
+        f"{match_source} "
+        "WITH src "
+        "MATCH (tgt:Paper) "
+        "WHERE tgt.doi IN $dois OR tgt.arxiv_id IN $arxiv_ids OR tgt.paper_id IN $paper_ids "
+        "MERGE (src)-[:CITES]->(tgt)"
+    )
     async with driver.session(**_session_kwargs()) as session:
-        for ref in refs:
-            ext = ref.get("externalIds") or {}
-            doi = ext.get("DOI")
-            arxiv_id = ext.get("ArXiv")
-            paper_id = ref.get("paperId")
-            title = ref.get("title")
+        await session.run(
+            query, src_key=paper_key,
+            dois=dois, arxiv_ids=arxiv_ids, paper_ids=paper_ids,
+        )
 
-            # Pick best identifier for MERGE
-            if doi:
-                merge_target = "MERGE (tgt:Paper {doi: $tgt_id})"
-                tgt_id = doi
-            elif arxiv_id:
-                merge_target = "MERGE (tgt:Paper {arxiv_id: $tgt_id})"
-                tgt_id = arxiv_id
-            elif paper_id:
-                merge_target = "MERGE (tgt:Paper {paper_id: $tgt_id})"
-                tgt_id = paper_id
-            else:
-                continue  # skip refs with no usable identifier
 
-            query = (
-                f"{match_source} "
-                f"{merge_target} "
-                "ON CREATE SET tgt.title = $title, tgt.source = 'stub' "
-                "MERGE (src)-[:CITES]->(tgt)"
-            )
-            await session.run(
-                query, src_key=paper_key, tgt_id=tgt_id, title=title or "Unknown",
-            )
+async def create_cited_by_edges(
+    paper_key: str, key_type: str, citing: list[dict],
+) -> None:
+    """Create existing_paper-[:CITES]->this_paper edges.
+
+    For each paper in `citing` that already exists in the DB, create a CITES
+    edge pointing to the paper identified by paper_key. This is the reverse
+    direction: existing papers that cite the newly added paper.
+    """
+    if not citing:
+        return
+    driver = _get_driver()
+
+    if key_type == "doi":
+        match_target = "MATCH (tgt:Paper {doi: $tgt_key})"
+    elif key_type == "arxiv_id":
+        match_target = "MATCH (tgt:Paper {arxiv_id: $tgt_key})"
+    else:
+        match_target = "MATCH (tgt:Paper {title: $tgt_key})"
+
+    dois = []
+    arxiv_ids = []
+    paper_ids = []
+    for ref in citing:
+        ext = ref.get("externalIds") or {}
+        if ext.get("DOI"):
+            dois.append(ext["DOI"])
+        if ext.get("ArXiv"):
+            arxiv_ids.append(ext["ArXiv"])
+        if ref.get("paperId"):
+            paper_ids.append(ref["paperId"])
+
+    query = (
+        f"{match_target} "
+        "WITH tgt "
+        "MATCH (src:Paper) "
+        "WHERE src.doi IN $dois OR src.arxiv_id IN $arxiv_ids OR src.paper_id IN $paper_ids "
+        "MERGE (src)-[:CITES]->(tgt)"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(
+            query, tgt_key=paper_key,
+            dois=dois, arxiv_ids=arxiv_ids, paper_ids=paper_ids,
+        )
 
 
 async def create_follows_edge(
@@ -405,6 +447,7 @@ async def find_similar_concept(
     """Find the most similar existing concept by vector similarity.
 
     Returns the concept name if cosine similarity >= threshold, else None.
+    Returns None gracefully if the vector index is empty or not yet ready.
     """
     driver = _get_driver()
     query = (
@@ -412,9 +455,13 @@ async def find_similar_concept(
         "YIELD node, score "
         "RETURN node.name AS name, score"
     )
-    async with driver.session(**_session_kwargs()) as session:
-        result = await session.run(query, embedding=embedding)
-        record = await result.single()
+    try:
+        async with driver.session(**_session_kwargs()) as session:
+            result = await session.run(query, embedding=embedding)
+            record = await result.single()
+    except Exception:
+        # Index empty or not yet populated — no match possible
+        return None
 
     if record and record["score"] >= threshold:
         return record["name"]

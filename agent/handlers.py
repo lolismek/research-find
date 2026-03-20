@@ -11,14 +11,14 @@ from typing import Any
 import aiohttp
 
 from ingestion.evidence_service import search_papers as _search_papers_multi
-from services.paper_resolver import resolve_paper, fetch_s2_references
+from services.paper_resolver import resolve_paper, fetch_s2_references, fetch_s2_citations
 from services.embeddings import schedule_embedding, schedule_concept_embeddings
 from services.concept_extractor import collect_raw_concepts, normalize_concepts
 from services.neo4j_store import (
     store_paper, get_paper, list_papers, search_similar,
     store_concepts, create_covers_edges, create_added_edge,
-    create_cites_edges, update_related_to, list_concepts_without_embeddings,
-    create_follows_edge,
+    create_cites_edges, create_cited_by_edges, update_related_to,
+    list_concepts_without_embeddings, create_follows_edge,
 )
 from background.rss_monitor import get_monitor
 
@@ -130,13 +130,18 @@ async def _enrich_paper_graph(
     except Exception as e:
         print(f"[enrich] ADDED edge failed: {e}")
 
-    # 5. Fetch S2 references + create CITES edges
+    # 5. Fetch S2 references + citations, create CITES edges in both directions
     try:
         if paper.paper_id:
             async with aiohttp.ClientSession() as session:
                 refs = await fetch_s2_references(session, paper.paper_id)
+                citations = await fetch_s2_citations(session, paper.paper_id)
+            # Forward: this paper cites existing papers
             if refs:
                 await create_cites_edges(merge_key, key_type, refs)
+            # Reverse: existing papers that cite this paper
+            if citations:
+                await create_cited_by_edges(merge_key, key_type, citations)
     except Exception as e:
         print(f"[enrich] CITES edges failed: {e}")
 
