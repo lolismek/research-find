@@ -115,14 +115,12 @@ class RSSMonitor:
     async def fetch_on_demand(
         self, category: str | None = None, top_n: int = 5
     ) -> dict[str, Any]:
-        """One-shot fetch, rank, send, and return results."""
+        """One-shot fetch, rank, and return results. Does not push to chat —
+        the LLM formats and presents the results itself."""
         papers = await fetch_arxiv_rss(category)
         top = rank_papers(papers, top_n)
 
         label = category or "all arXiv"
-        if top and self._send:
-            await self._send(self._format_digest(top, len(papers), label))
-
         return {
             "category": label,
             "total_fetched": len(papers),
