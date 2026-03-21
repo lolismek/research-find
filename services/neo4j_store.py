@@ -457,20 +457,6 @@ async def reconcile_cites_edges(paper_id: str) -> None:
         )
 
 
-async def create_follows_edge(
-    phone: str, concept_name: str, explicit: bool = True,
-) -> None:
-    """Create User-[:FOLLOWS]->Concept edge."""
-    driver = _get_driver()
-    query = (
-        "MATCH (u:User {phone_number: $phone}) "
-        "MERGE (c:Concept {name: $name}) "
-        "MERGE (u)-[r:FOLLOWS]->(c) "
-        "ON CREATE SET r.since = datetime(), r.explicit = $explicit"
-    )
-    async with driver.session(**_session_kwargs()) as session:
-        await session.run(query, phone=phone, name=concept_name, explicit=explicit)
-
 
 async def update_related_to(concept_names: list[str]) -> None:
     """Update RELATED_TO weights for all pairs of concepts."""
@@ -552,17 +538,31 @@ async def store_interest_blurb(
         await session.run(query, phone=phone, blurb=blurb, embedding=embedding)
 
 
+async def get_user_interest_embedding(phone: str) -> list[float] | None:
+    """Retrieve the stored interest embedding from the User node."""
+    driver = _get_driver()
+    async with driver.session(**_session_kwargs()) as session:
+        result = await session.run(
+            "MATCH (u:User {phone_number: $phone}) RETURN u.interest_embedding AS emb",
+            phone=phone,
+        )
+        record = await result.single()
+    if record and record["emb"]:
+        return list(record["emb"])
+    return None
+
+
 async def get_user_interest_signals(phone: str) -> dict:
     """Gather multi-hop graph signals about a user's research interests.
 
     Runs 5 Cypher queries and returns a dict with keys:
-    recent_papers, insights, followed_concepts, citation_neighborhood, concept_neighbor_papers
+    recent_papers, insights, concept_neighbors, citation_neighborhood, concept_neighbor_papers
     """
     driver = _get_driver()
     result = {
         "recent_papers": [],
         "insights": [],
-        "followed_concepts": [],
+        "concept_neighbors": [],
         "citation_neighborhood": [],
         "concept_neighbor_papers": [],
     }
@@ -578,7 +578,6 @@ async def get_user_interest_signals(phone: str) -> dict:
                 "RETURN p.title AS title, "
                 "       p.abstract AS abstract, "
                 "       p.fields_of_study AS fields, "
-                "       p.keywords AS keywords, "
                 "       p.year AS year, "
                 "       coalesce(a.score, 1.0) AS score, "
                 "       a.added_at AS added_at, "
@@ -609,17 +608,11 @@ async def get_user_interest_signals(phone: str) -> dict:
         except Exception as e:
             print(f"[interest_signals] Q2 insights failed: {e}")
 
-        # Query 3: Concept neighbors (paper concepts + followed concepts)
+        # Query 3: Paper concepts + their RELATED_TO neighbors
         try:
             r3 = await session.run(
-                "MATCH (u:User {phone_number: $phone}) "
-                "OPTIONAL MATCH (u)-[a:ADDED]->(p:Paper)-[:COVERS]->(pc:Concept) "
+                "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)-[:COVERS]->(c:Concept) "
                 "WHERE coalesce(a.score, 1.0) >= 1.0 "
-                "WITH u, collect(DISTINCT pc) AS paper_concepts "
-                "OPTIONAL MATCH (u)-[:FOLLOWS]->(fc:Concept) "
-                "WITH u, paper_concepts, collect(DISTINCT fc) AS followed_concepts "
-                "WITH paper_concepts + followed_concepts AS all_concepts "
-                "UNWIND all_concepts AS c "
                 "WITH DISTINCT c "
                 "OPTIONAL MATCH (c)-[r:RELATED_TO]-(neighbor:Concept) "
                 "WHERE r.weight >= 2 "
@@ -627,10 +620,10 @@ async def get_user_interest_signals(phone: str) -> dict:
                 "       collect(DISTINCT {name: neighbor.name, weight: r.weight}) AS neighbors",
                 phone=phone,
             )
-            result["followed_concepts"] = await r3.data()
-            print(f"[interest_signals] Q3 concepts: {len(result['followed_concepts'])}")
+            result["concept_neighbors"] = await r3.data()
+            print(f"[interest_signals] Q3 concept_neighbors: {len(result['concept_neighbors'])}")
         except Exception as e:
-            print(f"[interest_signals] Q3 concepts failed: {e}")
+            print(f"[interest_signals] Q3 concept_neighbors failed: {e}")
 
         # Query 4: Foundational cited papers (cited by >= 2 user papers)
         try:

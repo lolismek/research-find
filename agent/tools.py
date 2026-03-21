@@ -151,23 +151,6 @@ TOOLS = [
         },
     },
     {
-        "name": "follow_concept",
-        "description": (
-            "Follow a specific research concept/topic to track interests. "
-            "Use when the user expresses interest in a research area."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "concept_name": {
-                    "type": "string",
-                    "description": "The research concept or topic to follow (e.g., 'transformer architectures', 'protein folding')",
-                },
-            },
-            "required": ["concept_name"],
-        },
-    },
-    {
         "name": "fetch_rss_papers",
         "description": (
             "Fetch latest papers from RSS feeds. Supports Nature, Cell Press, Science, "

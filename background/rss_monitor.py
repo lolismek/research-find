@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from datetime import datetime, time, timedelta
 from typing import Any, Callable, Awaitable, Optional
+
+from tqdm import tqdm
 
 from services.rss_feeds import fetch_feeds, resolve_feeds, parse_date
 from services.interest_profile import generate_user_interest_blurb
@@ -19,35 +22,75 @@ PREFETCH_BUFFER = timedelta(hours=1)
 _monitor: Optional["RSSMonitor"] = None
 
 
-def rank_papers(entries: list[dict], n: int) -> list[dict]:
-    """Select top n entries, round-robin across sources for diversity."""
-    if len(entries) <= n:
-        return entries
+def _build_entry_text(entry: dict) -> str:
+    """Build text to embed for an RSS entry: title + summary."""
+    title = entry.get("title", "")
+    summary = entry.get("summary", "")
+    parts = []
+    if title:
+        parts.append(f"Title: {title}")
+    if summary:
+        parts.append(f"Abstract: {summary}")
+    return "\n".join(parts)
 
-    # Group by source
-    by_source: dict[str, list[dict]] = {}
-    for e in entries:
-        src = e.get("source_category", "unknown")
-        by_source.setdefault(src, []).append(e)
 
-    # Round-robin pick from each source
-    picked: list[dict] = []
-    sources = list(by_source.keys())
-    idx = {s: 0 for s in sources}
-    while len(picked) < n and sources:
-        exhausted = []
-        for s in sources:
-            if len(picked) >= n:
-                break
-            if idx[s] < len(by_source[s]):
-                picked.append(by_source[s][idx[s]])
-                idx[s] += 1
-            else:
-                exhausted.append(s)
-        for s in exhausted:
-            sources.remove(s)
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
 
-    return picked
+
+async def rank_papers(
+    entries: list[dict], n: int, user_phone: str | None = None,
+) -> list[dict]:
+    """Rank RSS entries by cosine similarity to user's interest embedding.
+
+    Falls back to recency-only if no user embedding is available.
+    """
+    from services.neo4j_store import get_user_interest_embedding
+    from services.embeddings import embed_texts
+
+    if not entries:
+        return []
+
+    # Get user interest embedding
+    user_emb = None
+    if user_phone:
+        user_emb = await get_user_interest_embedding(user_phone)
+
+    if not user_emb:
+        print("[rank] No user interest embedding found, returning most recent entries")
+        return entries[:n]
+
+    # Build texts for all entries
+    texts = [_build_entry_text(e) for e in entries]
+    print(f"[rank] Embedding {len(texts)} papers...")
+
+    # Embed in batches of 100 with progress bar
+    BATCH_SIZE = 100
+    all_embeddings: list[list[float]] = []
+    pbar = tqdm(total=len(texts), desc="[rank] Embedding", unit="paper")
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i:i + BATCH_SIZE]
+        batch_embs = await embed_texts(batch)
+        all_embeddings.extend(batch_embs)
+        pbar.update(len(batch))
+    pbar.close()
+
+    # Score by cosine similarity and return top n
+    scored = []
+    for entry, emb in zip(entries, all_embeddings):
+        sim = _cosine(user_emb, emb)
+        scored.append((sim, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    print(f"[rank] Top score: {scored[0][0]:.4f}, Bottom score: {scored[-1][0]:.4f}")
+    for sim, entry in scored[:n]:
+        print(f"[rank]   {sim:.4f} — {entry.get('title', '?')[:80]}")
+
+    return [entry for _, entry in scored[:n]]
 
 
 def _seconds_until(target: time) -> float:
@@ -168,7 +211,7 @@ class RSSMonitor:
                 feeds = resolve_feeds(user_prefs=self._user_prefs)
                 results = await fetch_feeds(feeds)
                 all_entries = _flatten_entries(results)
-                top = rank_papers(all_entries, 10)
+                top = await rank_papers(all_entries, 10, user_phone=self._user_phone)
 
                 remaining = _seconds_until(t)
                 if remaining > 0:
@@ -216,7 +259,7 @@ class RSSMonitor:
 
         results = await fetch_feeds(feeds)
         all_entries = _flatten_entries(results)
-        top = rank_papers(all_entries, top_n)
+        top = await rank_papers(all_entries, top_n, user_phone=self._user_phone)
 
         label_parts = []
         if source:

@@ -18,7 +18,7 @@ from services.neo4j_store import (
     store_paper, get_paper, list_papers, search_similar,
     store_concepts, create_covers_edges, create_added_edge,
     store_s2_ref_ids, reconcile_cites_edges, update_related_to,
-    list_concepts_without_embeddings, create_follows_edge,
+    list_concepts_without_embeddings,
     store_insight, create_about_edge, create_insight_covers_edges,
     get_paper_concepts, update_added_score,
 )
@@ -402,21 +402,6 @@ async def handle_find_similar_papers(
     }
 
 
-async def handle_follow_concept(
-    concept_name: str,
-    _user_phone: str | None = None,
-) -> dict[str, Any]:
-    """Follow a research concept."""
-    from services.concept_extractor import normalize_text
-    name = normalize_text(concept_name)
-    if not name:
-        return {"error": "Empty concept name"}
-    if not _user_phone:
-        return {"error": "No user identity — please log in with a phone number"}
-
-    await create_follows_edge(_user_phone, name, explicit=True)
-    return {"status": "following", "concept": name}
-
 
 async def handle_add_insight(
     paper_identifier: str,
@@ -548,7 +533,6 @@ TOOL_HANDLERS = {
     "configure_rss_feeds": handle_configure_rss_feeds,
     "set_notification_time": handle_set_notification_time,
     "find_similar_papers": handle_find_similar_papers,
-    "follow_concept": handle_follow_concept,
     "add_insight": handle_add_insight,
 }
 

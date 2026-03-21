@@ -21,7 +21,7 @@ async def generate_user_interest_blurb(phone_number: str) -> str:
 
     n_papers = len(signals["recent_papers"])
     n_insights = len(signals["insights"])
-    n_concepts = len(signals["followed_concepts"])
+    n_concepts = len(signals["concept_neighbors"])
     n_cited = len(signals["citation_neighborhood"])
     n_nearby = len(signals["concept_neighbor_papers"])
     print(f"[interest_profile] Signals: {n_papers} papers, {n_insights} insights, "
@@ -93,23 +93,15 @@ def _rank_concepts(signals: dict) -> list[tuple[str, float]]:
             if concept:
                 scores[concept] += 3.0
 
-    # Followed concepts (+2.5)
-    followed_names = set()
-    for entry in signals["followed_concepts"]:
-        name = entry.get("concept")
-        if name:
-            followed_names.add(name)
-            scores[name] += 2.5
-
-    # RELATED_TO neighbors of top concepts
+    # RELATED_TO neighbors of paper concepts
     max_weight = 1
-    for entry in signals["followed_concepts"]:
+    for entry in signals["concept_neighbors"]:
         for n in (entry.get("neighbors") or []):
             w = n.get("weight") or 0
             if w > max_weight:
                 max_weight = w
 
-    for entry in signals["followed_concepts"]:
+    for entry in signals["concept_neighbors"]:
         for n in (entry.get("neighbors") or []):
             name = n.get("name")
             w = n.get("weight") or 0
@@ -177,19 +169,10 @@ def _build_signal_context(
             )
         parts.append("\n".join(lines))
 
-    # Section 4: Explicitly followed topics
-    followed = set()
-    for entry in signals["followed_concepts"]:
-        name = entry.get("concept")
-        if name:
-            followed.add(name)
-    if followed:
-        parts.append("SECTION 4: EXPLICITLY FOLLOWED TOPICS\n" + ", ".join(sorted(followed)))
-
-    # Section 5: Foundational cited works
+    # Section 4: Foundational cited works
     citations = signals["citation_neighborhood"]
     if citations:
-        lines = ["SECTION 5: FOUNDATIONAL CITED WORKS (cited by N user papers)"]
+        lines = ["SECTION 4: FOUNDATIONAL CITED WORKS (cited by N user papers)"]
         for c in citations:
             gc = c.get("global_citations") or 0
             lines.append(
@@ -197,21 +180,21 @@ def _build_signal_context(
             )
         parts.append("\n".join(lines))
 
-    # Section 6: Concept neighbors
+    # Section 5: Concept neighbors
     neighbor_entries = []
-    for entry in signals["followed_concepts"]:
+    for entry in signals["concept_neighbors"]:
         concept = entry.get("concept")
         neighbors = entry.get("neighbors") or []
         neighbor_names = [n["name"] for n in neighbors if n.get("name")]
         if concept and neighbor_names:
             neighbor_entries.append(f"{concept} (related to: {', '.join(neighbor_names[:5])})")
     if neighbor_entries:
-        parts.append("SECTION 6: CONCEPT NEIGHBORS (adjacent interests)\n" + "; ".join(neighbor_entries[:15]))
+        parts.append("SECTION 5: CONCEPT NEIGHBORS (adjacent interests)\n" + "; ".join(neighbor_entries[:15]))
 
-    # Section 7: Nearby papers
+    # Section 6: Nearby papers
     nearby = signals["concept_neighbor_papers"]
     if nearby:
-        lines = ["SECTION 7: NEARBY PAPERS (sharing concepts, not added by user)"]
+        lines = ["SECTION 6: NEARBY PAPERS (sharing concepts, not added by user)"]
         for n in nearby:
             shared = ", ".join((n.get("shared") or [])[:5])
             lines.append(
