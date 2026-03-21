@@ -19,6 +19,14 @@ TOOLS = [
                     "description": "Maximum number of results to return (default: 10)",
                     "default": 10,
                 },
+                "personalize": {
+                    "type": "boolean",
+                    "description": (
+                        "Set to true to re-rank results by personal research interest relevance. "
+                        "Only use when the search topic overlaps with the user's interest blurb."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["query"],
         },

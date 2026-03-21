@@ -58,7 +58,13 @@ When determining score_impact for an insight, follow these guidelines:
 - Negative insights: -0.1 to -0.2 (mild criticism), -0.2 to -0.4 (notable flaws), \
 -0.4 to -0.7 (fundamental issues or disagreements)
 The score on the ADDED edge represents how much the user values a paper (0.0 to 2.0, \
-default 1.0). Adjust conservatively — a single negative comment shouldn't tank a paper."""
+default 1.0). Adjust conservatively — a single negative comment shouldn't tank a paper.
+
+When search results include a "user_interest_blurb" field, compare the search topic \
+to the blurb. If the search query is related to the user's research interests described \
+in the blurb, call search_papers again with the same query and personalize=true to get \
+results re-ranked by personal relevance. If the search topic is outside the user's \
+interests (the blurb seems unrelated), present the original results as-is."""
 
 HTML = """<!DOCTYPE html>
 <html>

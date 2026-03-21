@@ -538,6 +538,20 @@ async def store_interest_blurb(
         await session.run(query, phone=phone, blurb=blurb, embedding=embedding)
 
 
+async def get_user_interest_blurb(phone: str) -> str | None:
+    """Retrieve the stored interest blurb text from the User node."""
+    driver = _get_driver()
+    async with driver.session(**_session_kwargs()) as session:
+        result = await session.run(
+            "MATCH (u:User {phone_number: $phone}) RETURN u.interest_blurb AS blurb",
+            phone=phone,
+        )
+        record = await result.single()
+    if record and record["blurb"]:
+        return record["blurb"]
+    return None
+
+
 async def get_user_interest_embedding(phone: str) -> list[float] | None:
     """Retrieve the stored interest embedding from the User node."""
     driver = _get_driver()

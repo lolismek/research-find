@@ -21,21 +21,32 @@ from services.neo4j_store import (
     list_concepts_without_embeddings,
     store_insight, create_about_edge, create_insight_covers_edges,
     get_paper_concepts, update_added_score,
+    get_user_interest_blurb, get_user_interest_embedding,
 )
 from background.rss_monitor import get_monitor
 
 _background_tasks: set[asyncio.Task] = set()
 
 
-async def handle_search_papers(query: str, limit: int = 10) -> dict[str, Any]:
-    """Search across S2/PubMed/EPMC and return formatted results."""
+async def handle_search_papers(
+    query: str, limit: int = 10, personalize: bool = False,
+    _user_phone: str | None = None,
+) -> dict[str, Any]:
+    """Search across S2/PubMed/EPMC and return formatted results.
+
+    When personalize=True, regenerates the user interest blurb, embeds all
+    results in a single batch, and re-ranks by cosine similarity to the blurb.
+    """
+    import math
+    from services.embeddings import embed_texts
+    from services.interest_profile import generate_user_interest_blurb
+
     result = await _search_papers_multi(query, limit=limit)
     papers = result.get("papers", [])[:limit]
 
     formatted = []
-    for i, p in enumerate(papers, 1):
+    for p in papers:
         formatted.append({
-            "rank": i,
             "title": p.get("title"),
             "authors": _format_authors(p.get("authors")),
             "year": p.get("year"),
@@ -49,12 +60,65 @@ async def handle_search_papers(query: str, limit: int = 10) -> dict[str, Any]:
             "source": p.get("source"),
         })
 
-    return {
+    if personalize and _user_phone and formatted:
+        print(f"[search] Personalizing {len(formatted)} results for {_user_phone}")
+        try:
+            await generate_user_interest_blurb(_user_phone)
+            user_emb = await get_user_interest_embedding(_user_phone)
+        except Exception as e:
+            print(f"[search] Blurb generation failed, returning default order: {e}")
+            user_emb = None
+
+        if user_emb:
+            texts = [
+                f"Title: {p.get('title', '')}\nAbstract: {p.get('abstract', '')}"
+                for p in formatted
+            ]
+            paper_embs = await embed_texts(texts)
+
+            def _cosine(a: list[float], b: list[float]) -> float:
+                dot = sum(x * y for x, y in zip(a, b))
+                na = math.sqrt(sum(x * x for x in a))
+                nb = math.sqrt(sum(x * x for x in b))
+                return dot / (na * nb) if na and nb else 0.0
+
+            scored = [(_cosine(user_emb, emb), p) for emb, p in zip(paper_embs, formatted)]
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            for sim, p in scored[:5]:
+                print(f"[search]   {sim:.4f} — {p.get('title', '?')[:80]}")
+
+            formatted = []
+            for i, (sim, p) in enumerate(scored, 1):
+                p["rank"] = i
+                p["similarity"] = round(sim, 4)
+                formatted.append(p)
+
+            return {
+                "query": query,
+                "total_found": result.get("total_found", 0),
+                "showing": len(formatted),
+                "personalized": True,
+                "papers": formatted,
+            }
+
+    # Default path: number ranks and include blurb for LLM judgment
+    for i, p in enumerate(formatted, 1):
+        p["rank"] = i
+
+    resp: dict[str, Any] = {
         "query": query,
         "total_found": result.get("total_found", 0),
         "showing": len(formatted),
         "papers": formatted,
     }
+
+    if _user_phone:
+        blurb = await get_user_interest_blurb(_user_phone)
+        if blurb:
+            resp["user_interest_blurb"] = blurb
+
+    return resp
 
 
 async def handle_add_paper(
