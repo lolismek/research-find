@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta
 from typing import Any, Callable, Awaitable, Optional
 
 from services.rss_feeds import fetch_feeds, resolve_feeds, parse_date
+from services.interest_profile import generate_user_interest_blurb
 
 SendFunc = Callable[[str], Awaitable[None]]
 
@@ -65,10 +66,14 @@ class RSSMonitor:
         self._daily_task: Optional[asyncio.Task] = None
         self._notification_time: time = time(9, 0)
         self._user_prefs: dict = {}
+        self._user_phone: Optional[str] = None
         self._load_config()
 
     def set_send(self, send: SendFunc):
         self._send = send
+
+    def set_user_phone(self, phone: str):
+        self._user_phone = phone
 
     # ---- config persistence ------------------------------------------------
 
@@ -154,6 +159,12 @@ class RSSMonitor:
                 sleep_secs = _seconds_until(prefetch_time)
                 await asyncio.sleep(sleep_secs)
 
+                if self._user_phone:
+                    try:
+                        await generate_user_interest_blurb(self._user_phone)
+                    except Exception as e:
+                        print(f"[rss] Interest blurb generation failed: {e}")
+
                 feeds = resolve_feeds(user_prefs=self._user_prefs)
                 results = await fetch_feeds(feeds)
                 all_entries = _flatten_entries(results)
@@ -186,6 +197,12 @@ class RSSMonitor:
         top_n: int = 5,
     ) -> dict[str, Any]:
         """One-shot fetch, rank, and return results."""
+        if self._user_phone:
+            try:
+                await generate_user_interest_blurb(self._user_phone)
+            except Exception as e:
+                print(f"[rss] Interest blurb generation failed: {e}")
+
         feeds = resolve_feeds(source=source, category=category, user_prefs=self._user_prefs)
         if not feeds:
             return {

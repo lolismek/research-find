@@ -3,29 +3,56 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 
 
 async def generate_user_interest_blurb(phone_number: str) -> str:
-    """Generate a dense research interest blurb for embedding-based paper ranking."""
-    from services.neo4j_store import get_user_interest_signals
+    """Generate a dense research interest blurb for embedding-based paper ranking.
 
+    Also stores the blurb on the User node in Neo4j.
+    """
+    from services.neo4j_store import get_user_interest_signals, store_interest_blurb
+    from services.embeddings import embed_text
+
+    print(f"[interest_profile] Generating blurb for {phone_number}")
     signals = await get_user_interest_signals(phone_number)
 
+    n_papers = len(signals["recent_papers"])
+    n_insights = len(signals["insights"])
+    n_concepts = len(signals["followed_concepts"])
+    n_cited = len(signals["citation_neighborhood"])
+    n_nearby = len(signals["concept_neighbor_papers"])
+    print(f"[interest_profile] Signals: {n_papers} papers, {n_insights} insights, "
+          f"{n_concepts} concepts, {n_cited} cited works, {n_nearby} nearby papers")
+
     if not signals["recent_papers"]:
+        print("[interest_profile] No papers found, returning empty blurb")
         return ""
 
     ranked_concepts = _rank_concepts(signals)
+    print(f"[interest_profile] Top concepts: {', '.join(c for c, _ in ranked_concepts[:5])}")
+
     context = _build_signal_context(signals, ranked_concepts)
-    return await _synthesize_blurb(context)
+    blurb = await _synthesize_blurb(context)
+
+    if blurb:
+        print("[interest_profile] Embedding blurb...")
+        embedding = await embed_text(blurb)
+        await store_interest_blurb(phone_number, blurb, embedding)
+        print(f"[interest_profile] Blurb + embedding stored ({len(blurb.split())} words, {len(embedding)}-dim)")
+        print(f"[interest_profile] --- BLURB ---\n{blurb}\n[interest_profile] --- END ---")
+    else:
+        print("[interest_profile] Blurb generation produced empty result")
+
+    return blurb
 
 
 def _rank_concepts(signals: dict) -> list[tuple[str, float]]:
     """Aggregate concept scores across all signal types with recency weighting."""
     scores: dict[str, float] = defaultdict(float)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     def _recency_multiplier(added_at) -> float:
         if added_at is None:
@@ -41,6 +68,9 @@ def _rank_concepts(signals: dict) -> list[tuple[str, float]]:
                 added_at = datetime.fromisoformat(added_at.iso_format())
             except Exception:
                 return 1.0
+        # Ensure both are tz-aware for subtraction
+        if added_at.tzinfo is None:
+            added_at = added_at.replace(tzinfo=timezone.utc)
         days = (now - added_at).days
         if days <= 7:
             return 1.5
@@ -75,14 +105,14 @@ def _rank_concepts(signals: dict) -> list[tuple[str, float]]:
     max_weight = 1
     for entry in signals["followed_concepts"]:
         for n in (entry.get("neighbors") or []):
-            w = n.get("weight", 0)
+            w = n.get("weight") or 0
             if w > max_weight:
                 max_weight = w
 
     for entry in signals["followed_concepts"]:
         for n in (entry.get("neighbors") or []):
             name = n.get("name")
-            w = n.get("weight", 0)
+            w = n.get("weight") or 0
             if name and w >= 3:
                 scores[name] += 0.5 * (w / max_weight)
 
@@ -104,7 +134,7 @@ def _build_signal_context(
         parts.append("\n".join(lines))
 
     # Section 2: Recent papers (up to 10, sorted by score * recency)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     papers = signals["recent_papers"]
 
     def _paper_sort_key(p):
@@ -119,6 +149,8 @@ def _build_signal_context(
                     dt = added_at
                 else:
                     dt = datetime.fromisoformat(added_at.iso_format())
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 days = max((now - dt).days, 1)
             except Exception:
                 pass
@@ -191,23 +223,24 @@ def _build_signal_context(
 
 
 _SYNTHESIS_PROMPT = """\
-You are writing a research interest profile for an academic researcher. Based on the \
-signals below (their recent papers, insights, concepts, and citation patterns), write \
-a dense, information-rich paragraph (200-400 words) describing their current research \
-interests, methodological preferences, and intellectual focus areas.
+Based on the signals below, write a concise research interest profile (150-250 words). \
+This text will be embedded as a vector and compared via cosine similarity against \
+paper abstracts, so use precise technical terms that would appear in relevant abstracts.
 
-Requirements:
-- Write in third person ("This researcher...")
-- Pack densely with specific technical terms, methodologies, and research areas
-- Emphasize areas where the user has written insights (active intellectual engagement)
-- Weight recent activity more heavily than older
-- Mention intersections between different research threads if apparent
-- Include methodological preferences if they emerge from the papers
-- Note any emerging or shifting interests from the most recent papers
-- Do NOT include paper titles or author names
-- Do NOT include filler phrases or meta-commentary
-- The output will be embedded as a vector and compared against paper abstracts, \
-so optimize for semantic overlap with relevant academic abstracts
+Rules:
+- Write cohesive sentences that connect related topics naturally
+- Use concrete technical vocabulary — the kind found in abstracts, not commentary
+- State what the researcher works on, not how they feel about it
+- Group related interests into 3-5 short sentences, each covering a thread
+- No paper titles, author names, or filler ("notably", "particularly", "demonstrates deep conviction")
+- No meta-commentary about the researcher's engagement or trajectory
+
+Good: "Their work focuses on replacing recurrence with self-attention for sequence \
+transduction, using multi-head scaled dot-product attention and positional encoding \
+in encoder-decoder transformers."
+
+Bad: "This researcher demonstrates deep conviction in the centrality of self-attention, \
+regarding it as crucial to enabling effective sequence-to-sequence learning."
 
 SIGNALS:
 """
@@ -216,15 +249,17 @@ SIGNALS:
 async def _synthesize_blurb(context: str) -> str:
     """Call Haiku to synthesize the interest blurb, with fallback."""
     try:
+        print("[interest_profile] Calling Haiku for synthesis...")
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
             messages=[{"role": "user", "content": _SYNTHESIS_PROMPT + context}],
         )
+        print("[interest_profile] Haiku synthesis complete")
         return response.content[0].text.strip()
     except Exception as e:
-        print(f"[interest_profile] Haiku synthesis failed: {e}")
+        print(f"[interest_profile] Haiku synthesis failed: {e}, using fallback")
         return _fallback_blurb(context)
 
 

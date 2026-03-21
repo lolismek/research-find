@@ -195,6 +195,7 @@ async def ws_handler(request):
                 if user_phone:
                     try:
                         await store_user(user_phone)
+                        monitor.set_user_phone(user_phone)
                         print(f"[web] User logged in: {user_phone}")
                     except Exception as e:
                         print(f"[web] Failed to store user: {e}")

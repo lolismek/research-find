@@ -538,6 +538,20 @@ async def find_similar_concept(
     return None
 
 
+async def store_interest_blurb(
+    phone: str, blurb: str, embedding: list[float] | None = None,
+) -> None:
+    """Store the interest blurb and its embedding on the User node."""
+    driver = _get_driver()
+    query = (
+        "MATCH (u:User {phone_number: $phone}) "
+        "SET u.interest_blurb = $blurb, u.blurb_updated_at = datetime(), "
+        "    u.interest_embedding = $embedding"
+    )
+    async with driver.session(**_session_kwargs()) as session:
+        await session.run(query, phone=phone, blurb=blurb, embedding=embedding)
+
+
 async def get_user_interest_signals(phone: str) -> dict:
     """Gather multi-hop graph signals about a user's research interests.
 
@@ -545,98 +559,120 @@ async def get_user_interest_signals(phone: str) -> dict:
     recent_papers, insights, followed_concepts, citation_neighborhood, concept_neighbor_papers
     """
     driver = _get_driver()
+    result = {
+        "recent_papers": [],
+        "insights": [],
+        "followed_concepts": [],
+        "citation_neighborhood": [],
+        "concept_neighbor_papers": [],
+    }
 
     async with driver.session(**_session_kwargs()) as session:
         # Query 1: Recent papers + their concepts (score >= 1.0 only)
-        r1 = await session.run(
-            "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper) "
-            "WHERE coalesce(a.score, 1.0) >= 1.0 "
-            "WITH p, a ORDER BY a.added_at DESC LIMIT 20 "
-            "OPTIONAL MATCH (p)-[:COVERS]->(c:Concept) "
-            "RETURN p.title AS title, "
-            "       p.abstract AS abstract, "
-            "       p.fields_of_study AS fields, "
-            "       p.keywords AS keywords, "
-            "       p.year AS year, "
-            "       coalesce(a.score, 1.0) AS score, "
-            "       a.added_at AS added_at, "
-            "       collect(DISTINCT c.name) AS concepts",
-            phone=phone,
-        )
-        recent_papers = await r1.data()
+        try:
+            r1 = await session.run(
+                "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper) "
+                "WHERE coalesce(a.score, 1.0) >= 1.0 "
+                "WITH p, a ORDER BY a.added_at DESC LIMIT 20 "
+                "OPTIONAL MATCH (p)-[:COVERS]->(c:Concept) "
+                "RETURN p.title AS title, "
+                "       p.abstract AS abstract, "
+                "       p.fields_of_study AS fields, "
+                "       p.keywords AS keywords, "
+                "       p.year AS year, "
+                "       coalesce(a.score, 1.0) AS score, "
+                "       a.added_at AS added_at, "
+                "       collect(DISTINCT c.name) AS concepts",
+                phone=phone,
+            )
+            result["recent_papers"] = await r1.data()
+            print(f"[interest_signals] Q1 recent_papers: {len(result['recent_papers'])}")
+        except Exception as e:
+            print(f"[interest_signals] Q1 recent_papers failed: {e}")
 
         # Query 2: User's insights + insight concepts
-        r2 = await session.run(
-            "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)<-[ab:ABOUT]-(i:Insight) "
-            "WHERE ab.user_phone = $phone AND coalesce(a.score, 1.0) >= 1.0 "
-            "WITH i, p.title AS paper_title ORDER BY i.created_at DESC LIMIT 30 "
-            "OPTIONAL MATCH (i)-[:COVERS]->(c:Concept) "
-            "RETURN i.text AS insight_text, "
-            "       i.sentiment AS sentiment, "
-            "       i.score_impact AS score_impact, "
-            "       paper_title, "
-            "       collect(DISTINCT c.name) AS insight_concepts",
-            phone=phone,
-        )
-        insights = await r2.data()
+        try:
+            r2 = await session.run(
+                "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)<-[ab:ABOUT]-(i:Insight) "
+                "WHERE ab.user_phone = $phone AND coalesce(a.score, 1.0) >= 1.0 "
+                "WITH i, p.title AS paper_title ORDER BY i.created_at DESC LIMIT 30 "
+                "OPTIONAL MATCH (i)-[:COVERS]->(c:Concept) "
+                "RETURN i.text AS insight_text, "
+                "       i.sentiment AS sentiment, "
+                "       i.score_impact AS score_impact, "
+                "       paper_title, "
+                "       collect(DISTINCT c.name) AS insight_concepts",
+                phone=phone,
+            )
+            result["insights"] = await r2.data()
+            print(f"[interest_signals] Q2 insights: {len(result['insights'])}")
+        except Exception as e:
+            print(f"[interest_signals] Q2 insights failed: {e}")
 
         # Query 3: Concept neighbors (paper concepts + followed concepts)
-        r3 = await session.run(
-            "MATCH (u:User {phone_number: $phone}) "
-            "OPTIONAL MATCH (u)-[a:ADDED]->(p:Paper)-[:COVERS]->(pc:Concept) "
-            "WHERE coalesce(a.score, 1.0) >= 1.0 "
-            "WITH u, collect(DISTINCT pc) AS paper_concepts "
-            "OPTIONAL MATCH (u)-[:FOLLOWS]->(fc:Concept) "
-            "WITH paper_concepts + collect(DISTINCT fc) AS all_concepts "
-            "UNWIND all_concepts AS c "
-            "WITH DISTINCT c "
-            "OPTIONAL MATCH (c)-[r:RELATED_TO]-(neighbor:Concept) "
-            "WHERE r.weight >= 2 "
-            "RETURN c.name AS concept, "
-            "       collect(DISTINCT {name: neighbor.name, weight: r.weight}) AS neighbors",
-            phone=phone,
-        )
-        followed_concepts = await r3.data()
+        try:
+            r3 = await session.run(
+                "MATCH (u:User {phone_number: $phone}) "
+                "OPTIONAL MATCH (u)-[a:ADDED]->(p:Paper)-[:COVERS]->(pc:Concept) "
+                "WHERE coalesce(a.score, 1.0) >= 1.0 "
+                "WITH u, collect(DISTINCT pc) AS paper_concepts "
+                "OPTIONAL MATCH (u)-[:FOLLOWS]->(fc:Concept) "
+                "WITH u, paper_concepts, collect(DISTINCT fc) AS followed_concepts "
+                "WITH paper_concepts + followed_concepts AS all_concepts "
+                "UNWIND all_concepts AS c "
+                "WITH DISTINCT c "
+                "OPTIONAL MATCH (c)-[r:RELATED_TO]-(neighbor:Concept) "
+                "WHERE r.weight >= 2 "
+                "RETURN c.name AS concept, "
+                "       collect(DISTINCT {name: neighbor.name, weight: r.weight}) AS neighbors",
+                phone=phone,
+            )
+            result["followed_concepts"] = await r3.data()
+            print(f"[interest_signals] Q3 concepts: {len(result['followed_concepts'])}")
+        except Exception as e:
+            print(f"[interest_signals] Q3 concepts failed: {e}")
 
         # Query 4: Foundational cited papers (cited by >= 2 user papers)
-        r4 = await session.run(
-            "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)-[:CITES]->(cited:Paper) "
-            "WHERE coalesce(a.score, 1.0) >= 1.0 AND NOT (u)-[:ADDED]->(cited) "
-            "WITH cited, count(DISTINCT p) AS citing_count "
-            "WHERE citing_count >= 2 "
-            "RETURN cited.title AS title, "
-            "       cited.citation_count AS global_citations, "
-            "       cited.year AS year, "
-            "       citing_count "
-            "ORDER BY citing_count DESC, cited.citation_count DESC "
-            "LIMIT 10",
-            phone=phone,
-        )
-        citation_neighborhood = await r4.data()
+        try:
+            r4 = await session.run(
+                "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)-[:CITES]->(cited:Paper) "
+                "WHERE coalesce(a.score, 1.0) >= 1.0 "
+                "WITH u, cited, count(DISTINCT p) AS citing_count "
+                "WHERE citing_count >= 2 AND NOT (u)-[:ADDED]->(cited) "
+                "RETURN cited.title AS title, "
+                "       cited.citation_count AS global_citations, "
+                "       cited.year AS year, "
+                "       citing_count "
+                "ORDER BY citing_count DESC, cited.citation_count DESC "
+                "LIMIT 10",
+                phone=phone,
+            )
+            result["citation_neighborhood"] = await r4.data()
+            print(f"[interest_signals] Q4 cited works: {len(result['citation_neighborhood'])}")
+        except Exception as e:
+            print(f"[interest_signals] Q4 cited works failed: {e}")
 
         # Query 5: Nearby papers sharing many concepts (not added by user)
-        r5 = await session.run(
-            "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)-[:COVERS]->(c:Concept)<-[:COVERS]-(neighbor:Paper) "
-            "WHERE coalesce(a.score, 1.0) >= 1.0 AND NOT (u)-[:ADDED]->(neighbor) "
-            "WITH neighbor, collect(DISTINCT c.name) AS shared, count(DISTINCT c) AS shared_count "
-            "WHERE shared_count >= 3 "
-            "RETURN neighbor.title AS title, "
-            "       neighbor.abstract AS abstract, "
-            "       shared, "
-            "       shared_count "
-            "ORDER BY shared_count DESC "
-            "LIMIT 10",
-            phone=phone,
-        )
-        concept_neighbor_papers = await r5.data()
+        try:
+            r5 = await session.run(
+                "MATCH (u:User {phone_number: $phone})-[a:ADDED]->(p:Paper)-[:COVERS]->(c:Concept)<-[:COVERS]-(neighbor:Paper) "
+                "WHERE coalesce(a.score, 1.0) >= 1.0 "
+                "WITH u, neighbor, collect(DISTINCT c.name) AS shared "
+                "WHERE size(shared) >= 3 AND NOT (u)-[:ADDED]->(neighbor) "
+                "RETURN neighbor.title AS title, "
+                "       neighbor.abstract AS abstract, "
+                "       shared, "
+                "       size(shared) AS shared_count "
+                "ORDER BY shared_count DESC "
+                "LIMIT 10",
+                phone=phone,
+            )
+            result["concept_neighbor_papers"] = await r5.data()
+            print(f"[interest_signals] Q5 nearby papers: {len(result['concept_neighbor_papers'])}")
+        except Exception as e:
+            print(f"[interest_signals] Q5 nearby papers failed: {e}")
 
-    return {
-        "recent_papers": recent_papers,
-        "insights": insights,
-        "followed_concepts": followed_concepts,
-        "citation_neighborhood": citation_neighborhood,
-        "concept_neighbor_papers": concept_neighbor_papers,
-    }
+    return result
 
 
 def _record_to_paper(node) -> Paper:
