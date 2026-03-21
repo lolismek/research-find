@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+from collections import OrderedDict
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -13,6 +15,32 @@ from models.paper import Paper
 MODEL = "text-embedding-3-small"  # 1536 dims
 _client: Optional[AsyncOpenAI] = None
 _background_tasks: set[asyncio.Task] = set()
+
+# In-memory LRU embedding cache: hash(text) -> embedding vector
+# ~12 MB at 5000 entries (1536 floats each). Keeps the most recent entries.
+_CACHE_MAX = 5000
+_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
+
+
+def _cache_key(text: str) -> str:
+    normalized = " ".join(text.lower().split())
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _cache_get(text: str) -> list[float] | None:
+    key = _cache_key(text)
+    if key in _embed_cache:
+        _embed_cache.move_to_end(key)
+        return _embed_cache[key]
+    return None
+
+
+def _cache_put(text: str, embedding: list[float]) -> None:
+    key = _cache_key(text)
+    _embed_cache[key] = embedding
+    _embed_cache.move_to_end(key)
+    if len(_embed_cache) > _CACHE_MAX:
+        _embed_cache.popitem(last=False)
 
 
 def _get_client() -> AsyncOpenAI:
@@ -33,16 +61,46 @@ def _build_text(paper: Paper) -> str:
 
 async def embed_text(text: str) -> list[float]:
     """Embed a single text string. Returns 1536-dim vector."""
+    cached = _cache_get(text)
+    if cached is not None:
+        return cached
     client = _get_client()
     response = await client.embeddings.create(model=MODEL, input=text)
-    return response.data[0].embedding
+    embedding = response.data[0].embedding
+    _cache_put(text, embedding)
+    return embedding
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed multiple texts in one API call (up to 2048 inputs)."""
-    client = _get_client()
-    response = await client.embeddings.create(model=MODEL, input=texts)
-    return [d.embedding for d in sorted(response.data, key=lambda d: d.index)]
+    """Embed multiple texts in one API call (up to 2048 inputs).
+
+    Checks cache first; only sends uncached texts to OpenAI.
+    """
+    results: list[list[float] | None] = []
+    uncached_indices: list[int] = []
+    uncached_texts: list[str] = []
+
+    for i, text in enumerate(texts):
+        cached = _cache_get(text)
+        if cached is not None:
+            results.append(cached)
+        else:
+            results.append(None)
+            uncached_indices.append(i)
+            uncached_texts.append(text)
+
+    if uncached_texts:
+        client = _get_client()
+        response = await client.embeddings.create(model=MODEL, input=uncached_texts)
+        new_embs = [d.embedding for d in sorted(response.data, key=lambda d: d.index)]
+        for idx, emb in zip(uncached_indices, new_embs):
+            results[idx] = emb
+            _cache_put(texts[idx], emb)
+
+    if uncached_texts:
+        print(f"[embeddings] Cache: {len(texts) - len(uncached_texts)} hits, {len(uncached_texts)} misses")
+
+    return results  # type: ignore[return-value]
 
 
 async def embed_paper(paper: Paper) -> list[float]:
