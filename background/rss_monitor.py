@@ -309,13 +309,37 @@ class RSSMonitor:
         return "\n".join(lines)
 
 
+def _dedup_key(entry: dict) -> str:
+    """Return a key for deduplication: prefer DOI, then arXiv ID, then normalized title."""
+    doi = (entry.get("doi") or "").strip().lower()
+    if doi:
+        return f"doi:{doi}"
+    arxiv = (entry.get("arxiv_id") or "").strip().lower()
+    if arxiv:
+        return f"arxiv:{arxiv}"
+    title = (entry.get("title") or "").strip().lower()
+    # collapse whitespace for robustness
+    title = " ".join(title.split())
+    return f"title:{title}"
+
+
 def _flatten_entries(results: list[dict]) -> list[dict]:
-    """Flatten feed results into a single sorted list of entries."""
+    """Flatten feed results into a single sorted, deduplicated list of entries."""
     entries = []
     for r in results:
         entries.extend(r.get("entries", []))
     entries.sort(key=lambda e: parse_date(e.get("published", "")), reverse=True)
-    return entries
+
+    seen: set[str] = set()
+    deduped = []
+    for e in entries:
+        key = _dedup_key(e)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(e)
+    if len(entries) != len(deduped):
+        print(f"[rss] Deduplicated {len(entries)} → {len(deduped)} entries")
+    return deduped
 
 
 def _format_entry_authors(authors: Any) -> list[str]:
